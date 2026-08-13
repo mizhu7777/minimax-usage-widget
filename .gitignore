@@ -1,0 +1,30 @@
+# 敏感凭据（DPAPI 加密但仍不应入库）
+.config/
+
+# 运行时缓存与日志
+.cache/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# PowerShell
+*.ps1.bak
+
+# 本地构建工具与发布物
+.tools/
+dist/
+src/**/bin/
+src/**/obj/
+tests/**/bin/
+tests/**/obj/
+
+# 视觉设计讨论临时文件
+.superpowers/

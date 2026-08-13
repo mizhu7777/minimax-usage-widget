@@ -1,0 +1,189 @@
+<Window x:Class="MiniMaxUsage.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:MiniMaxUsage.App.Controls"
+        xmlns:vm="clr-namespace:MiniMaxUsage.App.ViewModels"
+        Title="MiniMax Usage"
+        Width="980" Height="680"
+        MinWidth="860" MinHeight="600"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="CanResize">
+    <Window.Resources>
+        <LinearGradientBrush x:Key="WindowBg" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Offset="0" Color="#F0F5FC"/>
+            <GradientStop Offset="1" Color="#E8EFF8"/>
+        </LinearGradientBrush>
+        <SolidColorBrush x:Key="NormalColor" Color="#22C55E"/>
+        <SolidColorBrush x:Key="WarningColor" Color="#F59E0B"/>
+        <SolidColorBrush x:Key="CriticalColor" Color="#EF4444"/>
+
+        <Style x:Key="TitleButton" TargetType="Button">
+            <Setter Property="Width" Value="14"/>
+            <Setter Property="Height" Value="14"/>
+            <Setter Property="Margin" Value="2,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+        </Style>
+
+        <Style x:Key="RangeButton" TargetType="Button">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Margin" Value="2"/>
+            <Setter Property="Padding" Value="8,3"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="#64748B"/>
+        </Style>
+
+        <Style x:Key="InfoCard" TargetType="Border">
+            <Setter Property="Background" Value="#F5F8FC"/>
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="10"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+    </Window.Resources>
+
+    <Border CornerRadius="18" Background="{StaticResource WindowBg}" BorderBrush="#FFFFFF" BorderThickness="1">
+        <Grid Margin="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="40"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Background="Transparent" MouseLeftButtonDown="TitleBar_MouseDown">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="14,0,0,0">
+                    <Button Style="{StaticResource TitleButton}" Background="#FB7185" Click="Close_Click"/>
+                    <Button Style="{StaticResource TitleButton}" Background="#FBBF24" Click="Minimize_Click"/>
+                    <Button Style="{StaticResource TitleButton}" Background="#4ADE80" Click="Maximize_Click"/>
+                </StackPanel>
+                <TextBlock Grid.Column="1" Text="MiniMax Usage" FontSize="12" Foreground="#64748B" VerticalAlignment="Center" Margin="10,0,0,0"/>
+            </Grid>
+
+            <Grid Grid.Row="1" Margin="20,0,20,20">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="额度使用详情" FontSize="22" FontWeight="700" Foreground="#172033"/>
+                        <TextBlock Text="{Binding Plan}" FontSize="12" Foreground="#64748B" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding StatusText}" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <Button Content="↻ 刷新数据" FontSize="11" Foreground="#2563EB" Background="#EAF2FF" BorderThickness="0" Padding="10,6" Cursor="Hand" Click="Refresh_Click"/>
+                    </StackPanel>
+                </Grid>
+
+                <Border Grid.Row="1" Background="#FEF2F2" CornerRadius="10" Padding="10,6" Margin="0,10,0,0" Visibility="{Binding ErrorMessage, Converter={x:Null}}">
+                    <TextBlock Text="{Binding ErrorMessage}" FontSize="11" Foreground="#DC2626"/>
+                </Border>
+
+                <ScrollViewer Grid.Row="2" Margin="0,14,0,0" VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="0.55*"/>
+                                <ColumnDefinition Width="0.45*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Border Grid.Column="0" Background="#FFFFFF" CornerRadius="15" Padding="15" BorderBrush="#E1E8F2" BorderThickness="1">
+                                <StackPanel>
+                                    <TextBlock Text="当前额度" FontSize="14" FontWeight="700" Foreground="#172033"/>
+                                    <Grid Margin="0,10,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" HorizontalAlignment="Center">
+                                            <controls:CircularGauge Value="{Binding FiveHourPercent}" Width="110" Height="110" Caption=""/>
+                                            <TextBlock Text="{Binding FiveHourPercent, StringFormat={}{0}%}" FontSize="11" Foreground="#64748B" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                                            <TextBlock Text="5 小时剩余" FontSize="10" Foreground="#94A3B8" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" HorizontalAlignment="Center">
+                                            <controls:CircularGauge Value="{Binding WeeklyPercent}" Width="110" Height="110" Caption=""/>
+                                            <TextBlock Text="{Binding WeeklyPercent, StringFormat={}{0}%}" FontSize="11" Foreground="#64748B" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                                            <TextBlock Text="本周剩余" FontSize="10" Foreground="#94A3B8" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <StackPanel Grid.Column="1" Margin="14,0,0,0">
+                                <Border Style="{StaticResource InfoCard}">
+                                    <StackPanel>
+                                        <TextBlock Text="5 小时窗口重置" FontSize="10" Foreground="#64748B"/>
+                                        <TextBlock Text="{Binding FiveHourResetText}" FontSize="13" FontWeight="600" Foreground="#172033"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource InfoCard}">
+                                    <StackPanel>
+                                        <TextBlock Text="本周额度重置" FontSize="10" Foreground="#64748B"/>
+                                        <TextBlock Text="{Binding WeeklyResetText}" FontSize="13" FontWeight="600" Foreground="#172033"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource InfoCard}">
+                                    <StackPanel>
+                                        <TextBlock Text="最后更新" FontSize="10" Foreground="#64748B"/>
+                                        <TextBlock Text="{Binding LastUpdatedText}" FontSize="13" FontWeight="600" Foreground="#172033"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Grid>
+
+                        <Border Grid.Row="2" Background="#FFFFFF" CornerRadius="15" Padding="15" BorderBrush="#E1E8F2" BorderThickness="1" Margin="0,14,0,0">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="剩余额度趋势" FontSize="14" FontWeight="700" Foreground="#172033"/>
+                                        <TextBlock Text="百分比升高表示额度已重置" FontSize="10" Foreground="#64748B"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Button Content="24小时" Style="{StaticResource RangeButton}" Click="Range24h_Click"/>
+                                        <Button Content="7天" Style="{StaticResource RangeButton}" Click="Range7d_Click" Background="#EAF2FF" Foreground="#2563EB"/>
+                                        <Button Content="30天" Style="{StaticResource RangeButton}" Click="Range30d_Click"/>
+                                    </StackPanel>
+                                </Grid>
+                                <controls:TrendChart x:Name="ChartControl" Height="200" Margin="0,10,0,0"
+                                                     FiveHourSegments="{Binding FiveHourSegments}"
+                                                     WeeklySegments="{Binding WeeklySegments}"/>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,16,0">
+                                        <Rectangle Width="10" Height="3" Fill="#2583F7" VerticalAlignment="Center" RadiusX="2" RadiusY="2"/>
+                                        <TextBlock Text="5 小时剩余" FontSize="10" Foreground="#64748B" Margin="4,0,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Rectangle Width="10" Height="3" Fill="#8B5CF6" VerticalAlignment="Center" RadiusX="2" RadiusY="2"/>
+                                        <TextBlock Text="本周剩余" FontSize="10" Foreground="#64748B" Margin="4,0,0,0"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#F8FAFC" CornerRadius="10" Padding="12,8" Margin="0,10,0,0" BorderBrush="#E2E8F0" BorderThickness="1">
+                            <TextBlock Text="这是本机定时记录的「剩余额度变化」，不是服务商提供的精确 Token 消耗明细。" FontSize="10" Foreground="#64748B" TextWrapping="Wrap"/>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>
