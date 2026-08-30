@@ -40,7 +40,9 @@ Write-Host '请输入 MiniMax API Key (输入隐藏):' -ForegroundColor Green
 $secure = Read-Host -AsSecureString -Prompt 'API Key'
 $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
 try {
-    $plainKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+    # P3-1 修复:用 PtrToStringBSTR(MS 对 BSTR 指针的规范 API),
+    # 替代 PtrToStringAuto(语义上针对 ANSI/Unicode 自动选择,对 BSTR 不合适)
+    $plainKey = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($BSTR)
 } finally {
     [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
 }

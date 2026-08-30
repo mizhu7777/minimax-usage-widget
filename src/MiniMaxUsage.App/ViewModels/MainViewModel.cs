@@ -27,7 +27,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _statusText = "正在加载…";
     private QuotaSeverity _statusSeverity = QuotaSeverity.Normal;
     private string _errorMessage = "";
-    private bool _hasHistory;
+    private IReadOnlyList<HistorySample> _allSamples = [];
     private IReadOnlyList<TrendSegment> _fiveHourSegments = [];
     private IReadOnlyList<TrendSegment> _weeklySegments = [];
 
@@ -54,8 +54,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string StatusText { get => _statusText; set => SetField(ref _statusText, value); }
     public QuotaSeverity StatusSeverity { get => _statusSeverity; set => SetField(ref _statusSeverity, value); }
     public string ErrorMessage { get => _errorMessage; set => SetField(ref _errorMessage, value); }
-    public bool HasHistory { get => _hasHistory; set => SetField(ref _hasHistory, value); }
+    // P2-11 修复:删 HasHistory 死字段(XAML 无消费,TrendChart 自己判断空态)
     public bool IsRefreshing { get => _isRefreshing; set => SetField(ref _isRefreshing, value); }
+
+    // P1-8 修复:Range 按钮选中态用显式 bool 绑到 Tag,Style 内的 DataTrigger 切换样式
+    public bool IsRange24h { get => _selectedRange == TrendRange.Hours24; }
+    public bool IsRange7d { get => _selectedRange == TrendRange.Days7; }
+    public bool IsRange30d { get => _selectedRange == TrendRange.Days30; }
 
     public TrendRange SelectedRange
     {
@@ -63,7 +68,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set
         {
             if (SetField(ref _selectedRange, value))
+            {
+                OnPropertyChanged(nameof(IsRange24h));
+                OnPropertyChanged(nameof(IsRange7d));
+                OnPropertyChanged(nameof(IsRange30d));
                 RebuildTrends();
+            }
         }
     }
 
@@ -83,7 +93,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         var now = _clock();
         LoadCache(now);
-        LoadHistory(now);
+        // P1-7 修复:Load() 内部统一读一次 history,然后传给 RebuildTrends,
+        // 避免之前 LoadHistory 读完丢弃 + RebuildTrends 再读一次的双重 IO
+        var historyPath = Path.Combine(_projectRoot, ".cache", "history.jsonl");
+        _allSamples = _historyReader.Read(historyPath, now.AddDays(-90));
+        RebuildTrends();
     }
 
     private void LoadCache(DateTimeOffset now)
@@ -116,7 +130,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
         FiveHourResetText = usage.FiveHour.ResetText;
         WeeklyResetText = usage.Weekly.ResetText;
         LastUpdatedText = $"最后更新: {usage.LastUpdate.ToLocalTime():HH:mm}";
-        ErrorMessage = usage.Error ?? "";
+
+        // P1-12 + N3 修复:ErrorMessage 的覆盖/清空规则:
+        // - 缓存 status=error 且有 error 字段 → 设置 ErrorMessage
+        // - 缓存 status=ok → 清空 ErrorMessage(成功覆盖之前的错误)
+        // 避免"成功刷新后旧错误横幅永久残留"
+        if (usage.Error is not null)
+            ErrorMessage = usage.Error;
+        else
+            ErrorMessage = "";
 
         if (usage.IsStale)
         {
@@ -135,22 +157,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    private void LoadHistory(DateTimeOffset now)
-    {
-        var historyPath = Path.Combine(_projectRoot, ".cache", "history.jsonl");
-        var samples = _historyReader.Read(historyPath, now.AddDays(-90));
-        HasHistory = samples.Count > 0;
-        RebuildTrends();
-    }
-
     private void RebuildTrends()
     {
-        var historyPath = Path.Combine(_projectRoot, ".cache", "history.jsonl");
+        // P1-7 + P2-9 修复:用 _allSamples 缓存,不再重复 IO;
+        // TrendSeriesBuilder 内部会按 selectedRange 过滤,无需在 HistoryReader 收窄
         var now = _clock();
-        var samples = _historyReader.Read(historyPath, now.AddDays(-90));
-        FiveHourSegments = TrendSeriesBuilder.Build(samples, _selectedRange, now, s => s.FiveHourPercent);
-        WeeklySegments = TrendSeriesBuilder.Build(samples, _selectedRange, now, s => s.WeeklyPercent);
-        HasHistory = samples.Count > 0;
+        FiveHourSegments = TrendSeriesBuilder.Build(_allSamples, _selectedRange, now, s => s.FiveHourPercent);
+        WeeklySegments = TrendSeriesBuilder.Build(_allSamples, _selectedRange, now, s => s.WeeklyPercent);
     }
 
     public async Task RefreshAsync()
@@ -163,6 +176,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             var result = await PowerShellRefreshService.RunAsync(_projectRoot);
             if (!result.Success)
             {
+                // 刷新失败先记录具体原因,Load() 后如果缓存本身有 error 字段,
+                // 会被 LoadCache 覆盖;否则保留这里写的"刷新失败"消息
                 ErrorMessage = result.Error ?? "刷新失败";
                 StatusText = "刷新失败";
                 StatusSeverity = QuotaSeverity.Warning;
@@ -182,6 +197,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {

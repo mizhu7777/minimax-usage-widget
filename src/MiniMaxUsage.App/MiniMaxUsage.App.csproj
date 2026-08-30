@@ -12,5 +12,12 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <AssemblyName>MiniMaxUsage</AssemblyName>
     <RootNamespace>MiniMaxUsage.App</RootNamespace>
+    <!-- P3-5 修复:显式 Version,EXE 文件属性有版本号;同时生成 FileVersion / AssemblyVersion -->
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Product>MiniMax Usage</Product>
+    <Company>MiniMax</Company>
+    <Copyright>MIT</Copyright>
   </PropertyGroup>
 </Project>

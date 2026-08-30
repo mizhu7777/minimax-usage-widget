@@ -88,10 +88,12 @@ $xmlBody = @"
       <Enabled>true</Enabled>
       <Repetition>
         <Interval>PT1M</Interval>
-        <Duration>P1D</Duration>
-        <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT15S</Delay>
+    </LogonTrigger>
   </Triggers>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
@@ -109,7 +111,7 @@ $xmlBody = @"
     <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
-    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>
+    <ExecutionTimeLimit>PT2M</ExecutionTimeLimit>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -120,7 +122,8 @@ $xmlBody = @"
   <Principals>
     <Principal id="Author">
       <UserId>$currentUser</UserId>
-      <RunLevel>HighestAvailable</RunLevel>
+      <LogonType>Interactive</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
   </Principals>
 </Task>
@@ -135,26 +138,35 @@ $fullBytes.AddRange($bom)
 $fullBytes.AddRange($contentBytes)
 [System.IO.File]::WriteAllBytes($xmlFile, $fullBytes.ToArray())
 
-# 调用 schtasks /Create /XML（XML 内部已经包含正确的 Principal UserId = 当前用户）
-$proc = Start-Process -FilePath 'schtasks.exe' `
-    -ArgumentList @('/Create', '/TN', "`"$taskName`"", '/XML', "`"$xmlFile`"", '/F') `
-    -Wait -PassThru -NoNewWindow -RedirectStandardError 'schtasks_stderr.txt' -RedirectStandardOutput 'schtasks_stdout.txt'
+# P2-4 修复:schtasks 重定向文件用 $PSScriptRoot,避免污染 C:\Windows\System32
+# P2-5 修复:Start-Process 包 try/catch,失败给友好提示
+$stderrLog = Join-Path $scriptDir 'schtasks_stderr.txt'
+$stdoutLog = Join-Path $scriptDir 'schtasks_stdout.txt'
+try {
+    $proc = Start-Process -FilePath 'schtasks.exe' `
+        -ArgumentList @('/Create', '/TN', "`"$taskName`"", '/XML', "`"$xmlFile`"", '/F') `
+        -Wait -PassThru -NoNewWindow -RedirectStandardError $stderrLog -RedirectStandardOutput $stdoutLog
+} catch {
+    Write-Host "[ERR] 启动 schtasks 失败: $_" -ForegroundColor Red
+    if (Test-Path $xmlFile) { Remove-Item $xmlFile -Force }
+    exit 1
+}
 
 if ($proc.ExitCode -ne 0) {
     $errMsg = ''
-    if (Test-Path 'schtasks_stderr.txt') { $errMsg = Get-Content 'schtasks_stderr.txt' -Raw }
+    if (Test-Path $stderrLog) { $errMsg = Get-Content $stderrLog -Raw }
     Write-Host "[ERR] schtasks 失败 (ExitCode=$($proc.ExitCode))" -ForegroundColor Red
     if ($errMsg) { Write-Host $errMsg.Trim() -ForegroundColor Red }
     if (Test-Path $xmlFile) { Remove-Item $xmlFile -Force }
-    if (Test-Path 'schtasks_stderr.txt') { Remove-Item 'schtasks_stderr.txt' }
-    if (Test-Path 'schtasks_stdout.txt') { Remove-Item 'schtasks_stdout.txt' }
+    if (Test-Path $stderrLog) { Remove-Item $stderrLog }
+    if (Test-Path $stdoutLog) { Remove-Item $stdoutLog }
     exit 1
 }
 
 # 清理临时文件
 if (Test-Path $xmlFile) { Remove-Item $xmlFile -Force }
-if (Test-Path 'schtasks_stderr.txt') { Remove-Item 'schtasks_stderr.txt' }
-if (Test-Path 'schtasks_stdout.txt') { Remove-Item 'schtasks_stdout.txt' }
+if (Test-Path $stderrLog) { Remove-Item $stderrLog }
+if (Test-Path $stdoutLog) { Remove-Item $stdoutLog }
 
 # 验证任务确实创建
 $verifyTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -163,13 +175,30 @@ if (-not $verifyTask) {
     exit 1
 }
 
+# P1-6 + N4 修复:注册成功后,自动生成 Rainmeter 皮肤所需的 Variables.inc
+# $scriptDir 已是 scripts/ 的父目录,只需 1 次 Split-Path 即可回到项目根
+$repoRoot = Split-Path -Parent $scriptDir
+$skinDir = Join-Path $repoRoot 'Skins\MiniMaxUsage'
+if (Test-Path $skinDir) {
+    try {
+        Write-RainmeterVariables -ProjectDir $repoRoot -SkinDir $skinDir
+        Write-Host "[OK]  Rainmeter Variables.inc 已生成于 SkinDir" -ForegroundColor DarkGray
+    } catch {
+        Write-Host "[WARN] 生成 Rainmeter 变量失败: $_" -ForegroundColor Yellow
+        Write-Host "  请手动重新安装或单独运行 Write-RainmeterVariables" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "[WARN] 未找到皮肤目录 $skinDir,跳过 Variables.inc 生成" -ForegroundColor Yellow
+}
+
 Write-Host ''
 Write-Host '=== 安装成功 ===' -ForegroundColor Green
 Write-Host "任务名称: $taskName"
 Write-Host "触发频率: 每 1 分钟（15 秒后启动第一次）"
+Write-Host "登录自启: 启用 (LogonTrigger,延迟 15s)"
 Write-Host "睡眠唤醒: 启用 (WakeToRun)"
 Write-Host "电池模式: 启用 (AllowStartIfOnBatteries)"
-Write-Host "账户: $currentUser (Highest 权限)"
+Write-Host "账户: $currentUser (最小权限)"
 Write-Host ''
 Write-Host '查看: 任务计划程序 → 任务计划库 → 找到 "MiniMaxUsageRefresh"' -ForegroundColor Cyan
 Write-Host '卸载: powershell -ExecutionPolicy Bypass -File scripts\Install-Task.ps1 -Uninstall' -ForegroundColor Cyan

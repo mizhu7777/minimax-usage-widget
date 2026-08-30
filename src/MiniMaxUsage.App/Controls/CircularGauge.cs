@@ -11,13 +11,21 @@ public sealed class CircularGauge : FrameworkElement
 
     public static readonly DependencyProperty AccentBrushProperty =
         DependencyProperty.Register(nameof(AccentBrush), typeof(Brush), typeof(CircularGauge),
-            new FrameworkPropertyMetadata(new SolidColorBrush(Color.FromRgb(37, 131, 247)),
+            new FrameworkPropertyMetadata(CreateFrozenBrush(Color.FromRgb(37, 131, 247)),
                 FrameworkPropertyMetadataOptions.AffectsRender));
 
     public static readonly DependencyProperty TrackBrushProperty =
         DependencyProperty.Register(nameof(TrackBrush), typeof(Brush), typeof(CircularGauge),
-            new FrameworkPropertyMetadata(new SolidColorBrush(Color.FromArgb(36, 90, 113, 136)),
+            new FrameworkPropertyMetadata(CreateFrozenBrush(Color.FromArgb(36, 90, 113, 136)),
                 FrameworkPropertyMetadataOptions.AffectsRender));
+
+    // P2-14 修复:DP 默认 brush 也要 Freeze,否则每次 OnRender 会有人能修改它
+    private static SolidColorBrush CreateFrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
 
     public static readonly DependencyProperty CaptionProperty =
         DependencyProperty.Register(nameof(Caption), typeof(string), typeof(CircularGauge),

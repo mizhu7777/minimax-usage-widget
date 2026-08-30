@@ -74,4 +74,35 @@ public sealed class UsageCacheReaderTests
 
         Assert.False(result.IsSuccess);
     }
+
+    // P2-16 修复:覆盖 schema_version < 2 / provider 错误分支
+    [Fact]
+    public void SchemaVersionBelow2ReturnsFatalError()
+    {
+        var json = """
+        {"schema_version":1,"provider_id":"minimax","status":"ok","plan":"MiniMax",
+         "last_update":"2026-07-22T12:00:00+08:00","error":null,"items":[]}
+        """;
+        using var temp = new TempDirectory();
+        var path = temp.WriteFile("cache.json", json);
+
+        var result = new Services.UsageCacheReader().Read(path, DateTimeOffset.Now);
+        Assert.False(result.IsSuccess);
+        Assert.NotNull(result.FatalError);
+    }
+
+    [Fact]
+    public void WrongProviderReturnsFatalError()
+    {
+        var json = """
+        {"schema_version":2,"provider_id":"openai","status":"ok","plan":"X",
+         "last_update":"2026-07-22T12:00:00+08:00","error":null,"items":[]}
+        """;
+        using var temp = new TempDirectory();
+        var path = temp.WriteFile("cache.json", json);
+
+        var result = new Services.UsageCacheReader().Read(path, DateTimeOffset.Now);
+        Assert.False(result.IsSuccess);
+        Assert.NotNull(result.FatalError);
+    }
 }

@@ -9,14 +9,15 @@
 ## ✨ 功能特性
 
 - **双圆环并列显示**：5 小时与本周剩余额度一目了然
-- **常驻桌面小组件**：透明度可调，可拖动，可置顶
+- **常驻桌面小组件**：可拖动，可置顶（`AlwaysOnTop=1` / `Dragging=1`）
 - **点击查看详情**：打开独立 Windows 详情窗口，查看完整信息
 - **额度趋势**：24 小时、7 天、30 天本机额度变化折线图
-- **状态指示**：正常/过期/错误，低额度自动变色
+- **状态指示**：正常/已过期/错误（基于 `last-success-epoch.txt` 心跳，3 分钟无更新自动降级为"● 已过期"）
+- **低额度自动变色**：Rainmeter 皮肤内 Calc 阈值切换（5h/weekly ≤10% 红、≤20% 橙、>20% 蓝/紫）
 - **每 1 分钟自动刷新**，失败时显示上次缓存 + 错误提示（降级）
 - **5小时窗口 + 周窗口** 双维度展示
 - **DPAPI 加密** API Key（Windows 用户绑定，零外部依赖）
-- **极简体积**：皮肤文件约 5KB，PowerShell 脚本约 5KB
+- **极简体积**：皮肤文件约 5KB，PowerShell 脚本约 15KB
 
 ---
 
@@ -92,7 +93,12 @@ cd D:\claude_work\2026\07\05\minimax
 powershell -ExecutionPolicy Bypass -File scripts\Install-Task.ps1
 ```
 
-这会创建任务计划 `MiniMaxUsageRefresh`：登录时启动，每 1 分钟调用一次 API。
+这会创建任务计划 `MiniMaxUsageRefresh`：
+- 登录时自动启动（`LogonTrigger`，延迟 15 秒）
+- 之后每 1 分钟调用一次 API（无限重复，无 1 天寿命）
+- 最小权限运行（`LeastPrivilege`，不需要管理员）
+- 自动生成 `Variables.inc` 给 Rainmeter 皮肤用
+- 与 WPF 详情窗口的「↻ 刷新数据」按钮互斥（命名互斥体）
 
 ### 5. 发布详情 EXE（可选，首次需要）
 
