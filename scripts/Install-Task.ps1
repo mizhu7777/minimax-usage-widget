@@ -17,6 +17,21 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $updateScript = Join-Path $scriptDir 'Update-MinimaxUsage.vbs'
 $xmlFile = Join-Path $scriptDir 'MiniMaxUsageRefresh.xml'
 
+# P6 修复:UAC 提权上下文的用户可能不是桌面登录用户(例如用另一个管理员账户确认 UAC),
+# 而 DPAPI 的 API Key 绑定桌面用户 —— 任务必须注册到交互登录用户名下,
+# 否则定时刷新全部因解密失败报"API Key 无效"。通过 explorer.exe 属主探测真实桌面用户
+function Get-InteractiveUser {
+    try {
+        $explorer = Get-Process -Name explorer -ErrorAction Stop | Select-Object -First 1
+        $owner = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter "ProcessId=$($explorer.Id)") -MethodName GetOwner
+        if ($owner -and $owner.User) {
+            if ($owner.Domain) { return "$($owner.Domain)\$($owner.User)" }
+            return $owner.User
+        }
+    } catch { }
+    return [Security.Principal.WindowsIdentity]::GetCurrent().Name
+}
+
 # === 复用函数：生成 Rainmeter 路径变量文件 ===
 function Write-RainmeterVariables {
     param([string]$ProjectDir, [string]$SkinDir)
@@ -73,7 +88,13 @@ if ($existing) {
 $startBoundary = (Get-Date).AddSeconds(15).ToString('yyyy-MM-ddTHH:mm:ss')
 
 # 在 XML 之前定义 currentUser，以便 here-string 插值
-$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+# P6 修复:用交互登录用户而非提权上下文用户注册任务
+$elevatedUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$currentUser = Get-InteractiveUser
+if ($currentUser -ne $elevatedUser) {
+    Write-Host "[WARN] 提权账户($elevatedUser)与桌面登录用户($currentUser)不同" -ForegroundColor Yellow
+    Write-Host "       任务将注册到桌面用户 $currentUser 名下（API Key 由该用户 DPAPI 加密）" -ForegroundColor Yellow
+}
 
 $xmlBody = @"
 <?xml version="1.0" encoding="UTF-16"?>
@@ -81,6 +102,8 @@ $xmlBody = @"
   <RegistrationInfo>
     <Author>MiniMax Usage Widget</Author>
     <Description>每 1 分钟刷新 MiniMax API 用量缓存</Description>
+    <!-- M-7 修复:带版本号,便于排查"用户跑的是老版任务定义还是新版" -->
+    <Version>2</Version>
   </RegistrationInfo>
   <Triggers>
     <TimeTrigger>

@@ -51,6 +51,13 @@ public static class PowerShellRefreshService
             using var process = new Process { StartInfo = info };
             process.Start();
 
+            // O6 修复:WaitForExit 不响应取消令牌 —— 注册回调,取消时杀掉整棵进程树,
+            // 避免取消后子进程(可能还持有 Global 互斥体)泄漏
+            using var cancellationRegistration = cancellationToken.Register(() =>
+            {
+                try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+            });
+
             var completed = await Task.Run(() => process.WaitForExit((int)timeout.TotalMilliseconds), cancellationToken);
 
             if (!completed)

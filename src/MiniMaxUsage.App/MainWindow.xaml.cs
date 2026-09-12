@@ -36,7 +36,16 @@ public partial class MainWindow : Window
     {
         // P1-11 修复:用 e.ChangedButton 而非 e.LeftButton,语义上区分"按下的瞬间"和"当前状态"
         if (e.ChangedButton == MouseButton.Left && e.ButtonState == MouseButtonState.Pressed)
-            DragMove();
+        {
+            // O7 修复:鼠标在调用途中释放时 DragMove 抛 InvalidOperationException(WPF 已知边界条件),吞掉即可
+            try
+            {
+                DragMove();
+            }
+            catch (InvalidOperationException)
+            {
+            }
+        }
     }
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();

@@ -159,11 +159,11 @@ D:\claude_work\2026\07\05\minimax\
 
 ## 🔧 故障排查
 
-### 小组件显示 "● ERR"
+### 小组件显示 "● 错误"
 
 API 调用失败。查看 `.cache\widget.log` 了解原因。
 
-### 小组件显示 "● 数据已过期"
+### 小组件显示 "● 已过期"
 
 超过 3 分钟未成功更新。检查网络或 API Key 是否有效。
 
@@ -177,7 +177,7 @@ API 调用失败。查看 `.cache\widget.log` 了解原因。
 
 ### 点击"查看详情"无反应
 
-确认已执行 `Publish-App.ps1` 发布 EXE。确认 `dist\win-x64\MiniMaxUsage.exe` 存在。
+右下角的"查看详情 →"文字由刷新脚本自动写入 `detail.txt`（若为空，手动运行一次刷新即可生成）。确认已执行 `Publish-App.ps1` 发布 EXE，确认 `dist\win-x64\MiniMaxUsage.exe` 存在。
 
 ### 进度条一直是 0
 

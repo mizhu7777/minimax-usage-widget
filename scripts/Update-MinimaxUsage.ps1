@@ -17,8 +17,9 @@ $timeoutSec = 10
 $maxRetries = 3
 $retryDelaySec = 5
 $loopIntervalSec = 30   # 循环模式下每次调用的间隔
-$staleAfterSeconds = 180   # 超过 3 分钟无成功刷新视为"已过期"
 $mutexName = 'Global\MiniMaxUsage.Refresh'  # 防止 WPF 手动刷新与任务计划并发跑同一脚本
+# 注:"已过期"状态由皮肤侧 Freshness.lua 基于 last-success-epoch.txt 心跳独立判定,
+# 脚本侧不再重复计算(O2 修复:原 Write-Status 的过期分支不可达)
 
 # === 路径解析（全部留在项目目录下） ===
 $scriptDir  = $PSScriptRoot
@@ -41,17 +42,20 @@ if (-not (Test-Path $cacheDir)) {
 # === 日志函数 ===
 function Write-Log {
     param([string]$Level, [string]$Message)
-    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    # M-2 修复:统一用 DateTimeOffset,不再混用 Get-Date
+    $timestamp = [DateTimeOffset]::Now.ToString('yyyy-MM-dd HH:mm:ss')
     $line = "[$timestamp] [$Level] $Message"
     try {
-        Add-Content -Path $logFile -Value $line -Encoding UTF8
+        # M-4 修复:统一 UTF-8 无 BOM —— PS 5.1 的 -Encoding UTF8 在创建文件时会写 BOM,
+        # 与 C# 端 File.AppendAllText(无 BOM)混写造成编码不一致
+        [System.IO.File]::AppendAllText($logFile, $line + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 
-        # P2-18 修复:日志轮转的 Get-Content/Set-Content 在文件被外部锁时抛
+        # P2-18 修复:日志轮转在文件被外部锁时抛
         # 用 try/catch 吃掉轮转失败,主写入仍保留
         if ((Test-Path $logFile) -and (Get-Item $logFile).Length -gt 1MB) {
             try {
-                $tail = Get-Content $logFile -Tail 500 -Encoding UTF8
-                Set-Content -Path $logFile -Value $tail -Encoding UTF8
+                $tail = @(Get-Content $logFile -Tail 500 -Encoding UTF8)
+                [System.IO.File]::WriteAllLines($logFile, $tail, [System.Text.UTF8Encoding]::new($false))
             } catch {
                 # 轮转失败不致命,下次重试
             }
@@ -89,7 +93,7 @@ function Write-Cache {
     }
     $json = $Data | ConvertTo-Json -Depth 5 -Compress
     [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
-    Move-Item -Path $tmp -Destination $cacheFile -Force
+    Move-ItemAtomic -Source $tmp -Destination $cacheFile
 }
 
 # === 计算人类可读的重置时间（精确到分钟） ===
@@ -97,7 +101,8 @@ function Format-ResetText {
     param([string]$resetAt)
     if (-not $resetAt) { return 'N/A' }
     try {
-        $diff = [DateTimeOffset]::Parse($resetAt).ToLocalTime() - (Get-Date)
+        # M-2 修复:两侧统一 DateTimeOffset,不做 DateTimeOffset-DateTime 混算
+        $diff = [DateTimeOffset]::Parse($resetAt).ToLocalTime() - [DateTimeOffset]::Now
         if ($diff.TotalSeconds -le 0) { return '即将重置' }
         # 先取整（向下取整）再除，避免 [int] cast 的四舍五入问题
         $totalMinutes = [int][math]::Floor($diff.TotalMinutes)
@@ -177,7 +182,7 @@ function Build-CacheFromResponse {
             $resetAt = $null
             if ($m.remains_time -gt 0) {
                 # 注:remains_time 字段为「毫秒」,API 直接给的是窗口剩余的毫秒数
-                $resetAt = (Get-Date).ToUniversalTime().AddMilliseconds([double]$m.remains_time).ToString('o')
+                $resetAt = [DateTimeOffset]::Now.ToUniversalTime().AddMilliseconds([double]$m.remains_time).ToString('o')
             }
             $items += [ordered]@{
                 name            = "$displayName (5小时)"
@@ -194,7 +199,7 @@ function Build-CacheFromResponse {
             $resetAt = $null
             if ($m.weekly_remains_time -gt 0) {
                 # 注:weekly_remains_time 字段为「毫秒」
-                $resetAt = (Get-Date).ToUniversalTime().AddMilliseconds([double]$m.weekly_remains_time).ToString('o')
+                $resetAt = [DateTimeOffset]::Now.ToUniversalTime().AddMilliseconds([double]$m.weekly_remains_time).ToString('o')
             }
             $items += [ordered]@{
                 name            = "$displayName (周)"
@@ -212,9 +217,26 @@ function Build-CacheFromResponse {
         provider_id    = 'minimax'
         status         = 'ok'
         plan           = $planName
-        last_update    = (Get-Date).ToString('o')
+        last_update    = [DateTimeOffset]::Now.ToString('o')
         error          = $null
         items          = $items
+    }
+}
+
+# === 原子替换:先写 .tmp 再 rename ===
+# P1 修复:WPF(每 15 秒)和 Rainmeter(每 30 秒)会随时打开读取这些文件,
+# 目标句柄未关闭时 Move-Item -Force 抛 IOException,会把一次正常刷新误判成 API 失败;
+# 用短重试吸收瞬时文件锁
+function Move-ItemAtomic {
+    param([string]$Source, [string]$Destination, [int]$MaxAttempts = 5)
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Move-Item -Path $Source -Destination $Destination -Force -ErrorAction Stop
+            return
+        } catch [System.IO.IOException] {
+            if ($attempt -eq $MaxAttempts) { throw }
+            Start-Sleep -Milliseconds 100
+        }
     }
 }
 
@@ -225,7 +247,7 @@ function Write-AtomicText {
     if (Test-Path $tmp) { Remove-Item $tmp -Force }
     [IO.File]::WriteAllText($tmp, $Value, [System.Text.UTF8Encoding]::new($false))
     # 不预先 Remove-Item,直接 Move-Item -Force 在同卷上是原子替换
-    Move-Item -Path $tmp -Destination $Path -Force
+    Move-ItemAtomic -Source $tmp -Destination $Path
 }
 
 # === 同时写多个简单文本文件（供 Rainmeter 读取）===
@@ -235,17 +257,18 @@ function Write-AtomicText {
 function Write-SimpleCache {
     param($Cache)
     $planTxt   = Join-Path $cacheDir 'plan.txt'
-    $statusTxt = Join-Path $cacheDir 'status.txt'
     $pct1Txt   = Join-Path $cacheDir 'pct1.txt'
     $reset1Txt = Join-Path $cacheDir 'reset1.txt'
     $pct2Txt   = Join-Path $cacheDir 'pct2.txt'
     $reset2Txt = Join-Path $cacheDir 'reset2.txt'
     $bar1Txt   = Join-Path $cacheDir 'bar1.txt'
     $bar2Txt   = Join-Path $cacheDir 'bar2.txt'
-    $statusDisplayTxt = Join-Path $cacheDir 'status.txt'
     $detailTxt = Join-Path $cacheDir 'detail.txt'
 
     Write-AtomicText -Path $planTxt -Value $Cache.plan
+    # P3 修复:detail.txt 供皮肤 [MeterDetailLink] 渲染"查看详情"入口,
+    # 之前只定义了路径从未写入,导致详情窗口入口在全新部署下不可见
+    Write-AtomicText -Path $detailTxt -Value '查看详情 →'
 
     # 注:数字字段(pct/bar)必须用 InvariantCulture 格式化,避免 de-DE 等区域
     # 写出 "0,5" 把 Rainmeter Calc/数字解析撑坏
@@ -261,33 +284,28 @@ function Write-SimpleCache {
 
     if ($item1.Count -gt 0) {
         $fiveHour = $item1[0]
-        Write-AtomicText -Path $pct1Txt -Value ($fiveHour.remaining_pct.ToString($ci))
+        # O1 修复:保留 1 位小数,避免 API 返回 66.66666666666667 时皮肤显示超长小数
+        Write-AtomicText -Path $pct1Txt -Value ([math]::Round([double]$fiveHour.remaining_pct, 1).ToString($ci))
         $bar1 = [math]::Round($fiveHour.remaining_pct / 100.0, 4)
         Write-AtomicText -Path $bar1Txt -Value ($bar1.ToString($ci))
         Write-AtomicText -Path $reset1Txt -Value $fiveHour.reset_text
     }
     if ($item2.Count -gt 0) {
         $weekly = $item2[0]
-        Write-AtomicText -Path $pct2Txt -Value ($weekly.remaining_pct.ToString($ci))
+        Write-AtomicText -Path $pct2Txt -Value ([math]::Round([double]$weekly.remaining_pct, 1).ToString($ci))
         $bar2 = [math]::Round($weekly.remaining_pct / 100.0, 4)
         Write-AtomicText -Path $bar2Txt -Value ($bar2.ToString($ci))
         Write-AtomicText -Path $reset2Txt -Value $weekly.reset_text
     }
 }
 
-# === 写 status.txt 时考虑「新鲜/警告/过期/错误」四态（P2-19 修复）===
+# === 写 status.txt 供 Rainmeter 状态徽章显示（P2-19 四态语义保留在皮肤侧）===
+# O2 修复:原来基于"刚写入的 epoch"计算 age 恒为 0,过期分支不可达;
+# 新鲜度判定统一由 Freshness.lua 基于 last-success-epoch.txt 心跳完成
 function Write-Status {
-    param([string]$Status, [DateTimeOffset]$Now, [string]$LastSuccessEpoch)
+    param([string]$Status, [DateTimeOffset]$Now)
     $display = switch ($Status) {
-        'ok' {
-            if ($LastSuccessEpoch) {
-                $age = $Now.ToUnixTimeSeconds() - [long]$LastSuccessEpoch
-                if ($age -gt $staleAfterSeconds) { '● 已过期' }
-                else { '● 稳定' }
-            } else {
-                '● 稳定'
-            }
-        }
+        'ok' { '● 稳定' }
         'error' { '● 错误' }
         default { '● 未知' }
     }
@@ -316,21 +334,30 @@ function New-HistorySnapshot {
 
 function Get-HistoryWindowKey {
     param($Snapshot)
+    # S1 修复:比较键不再包含 reset_at —— reset_at 每次由本地时钟+remains_time 现算,
+    # 亚秒级抖动让"内容相同"的两次快照键必然不同,内容去重从未命中过(实测 23,059 行/28 天)。
+    # reset_at 仍保留在快照数据里,只是不参与比较;百分比用 InvariantCulture 保证键稳定
+    $ci = [System.Globalization.CultureInfo]::InvariantCulture
     return (@($Snapshot.windows | Sort-Object model_id, window_id | ForEach-Object {
-        "$($_.model_id)|$($_.window_id)|$($_.remaining_pct)|$($_.reset_at)"
+        "$($_.model_id)|$($_.window_id)|$([double]$_.remaining_pct.ToString($ci))"
     }) -join ';')
 }
 
 function Test-ShouldAppendHistory {
     param($Last, $Current, [DateTimeOffset]$Now)
     if ($null -eq $Last) { return $true }
-    if ((Get-HistoryWindowKey $Last) -ne (Get-HistoryWindowKey $Current)) { return $true }
     try {
         $lastAt = [DateTimeOffset]::Parse($Last.recorded_at)
-        return (($Now - $lastAt).TotalMinutes -ge 15)
     } catch {
         return $true
     }
+    $ageMinutes = ($Now - $lastAt).TotalMinutes
+    # 心跳:超过 15 分钟必追加,保证趋势图的时间基准不中断
+    if ($ageMinutes -ge 15) { return $true }
+    # S1 修复:值有变化也至少间隔 10 分钟才记录 —— 追加速度上限 144 条/天,
+    # 90 天约 1.3 万行,修剪(下方正则版)在任务计划 2 分钟时限内绰绰有余
+    if ((Get-HistoryWindowKey $Last) -ne (Get-HistoryWindowKey $Current) -and $ageMinutes -ge 10) { return $true }
+    return $false
 }
 
 function Get-LastHistorySnapshot {
@@ -343,14 +370,19 @@ function Get-LastHistorySnapshot {
 
 function Select-RetainedHistoryLines {
     param([string[]]$Lines, [DateTimeOffset]$Now)
+    # S1 修复:用正则抽取 recorded_at,替代逐行 ConvertFrom-Json。
+    # PS 5.1 的 ConvertFrom-Json 约 1-2ms/行,10 万行要 2-4 分钟,会撞任务计划
+    # ExecutionTimeLimit=PT2M 被强杀,而"已修剪"标记在重写完成后才写,导致修剪永远完不成。
+    # 正则版 10 万行毫秒级;无 recorded_at 的坏行同样被丢弃,语义与原实现一致
     $cutoff = $Now.AddDays(-90)
     $result = @()
     foreach ($line in $Lines) {
-        try {
-            $value = $line | ConvertFrom-Json
-            if ([DateTimeOffset]::Parse($value.recorded_at) -ge $cutoff) { $result += $line }
-        } catch {
-            continue
+        if ($line -match '"recorded_at":"([^"]+)"') {
+            try {
+                if ([DateTimeOffset]::Parse($Matches[1]) -ge $cutoff) { $result += $line }
+            } catch {
+                continue
+            }
         }
     }
     return $result
@@ -373,7 +405,7 @@ function Invoke-HistoryPruneIfDue {
         $kept = @(Select-RetainedHistoryLines -Lines (Get-Content $historyFile -Encoding UTF8) -Now $Now)
         $tmp = "$historyFile.tmp"
         [IO.File]::WriteAllLines($tmp, $kept, [Text.UTF8Encoding]::new($false))
-        Move-Item $tmp $historyFile -Force
+        Move-ItemAtomic -Source $tmp -Destination $historyFile
     }
     Write-AtomicText -Path $historyPrunedDateFile -Value $today
 }
@@ -426,9 +458,8 @@ function Invoke-RefreshOnce {
             Add-HistorySnapshot -Cache $cache -Now $now
             Invoke-HistoryPruneIfDue -Now $now
             Write-AtomicText -Path $lastSuccessEpochFile -Value "$($now.ToUnixTimeSeconds())"
-            # status 包含四态:稳定/已过期/错误/未知（P2-19 修复）
-            $lastEpoch = if (Test-Path $lastSuccessEpochFile) { Get-Content $lastSuccessEpochFile -Raw } else { '' }
-            Write-Status -Status 'ok' -Now $now -LastSuccessEpoch $lastEpoch
+            # status 只表达 ok/error;新鲜度由 Freshness.lua 基于心跳 epoch 判定（O2 修复）
+            Write-Status -Status 'ok' -Now $now
             Write-Log 'INFO' "刷新成功：套餐=$planName, 条目数=$($cache.items.Count)"
 
             # 清理解密后的 key
@@ -453,8 +484,7 @@ function Invoke-RefreshOnce {
                 Write-Cache -Data $errorCache
                 Write-SimpleCache -Cache $errorCache
                 $now = [DateTimeOffset]::Now
-                $lastEpoch = if (Test-Path $lastSuccessEpochFile) { Get-Content $lastSuccessEpochFile -Raw } else { '' }
-                Write-Status -Status 'error' -Now $now -LastSuccessEpoch $lastEpoch
+                Write-Status -Status 'error' -Now $now
             } catch {
                 # P2-18 修复:catch 内的 Write-Log 也可能抛(磁盘满/句柄耗尽),
                 # 不能让它击穿到主 catch,否则会丢整个错误降级路径

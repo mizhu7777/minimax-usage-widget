@@ -1,9 +1,0 @@
-[Variables]
-ProjectDir=D:\claude_work\2026\07\05\minimax
-ProjectDirUri=D:/claude_work/2026/07/05/minimax
-DetailExe=D:\claude_work\2026\07\05\minimax\dist\win-x64\MiniMaxUsage.exe
-NormalColor=37,131,247,255
-WeeklyColor=139,92,246,255
-WarningColor=245,158,11,255
-CriticalColor=239,68,68,255
-TrackColor=90,113,136,36

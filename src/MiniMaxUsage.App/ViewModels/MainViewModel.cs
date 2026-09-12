@@ -30,6 +30,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private IReadOnlyList<HistorySample> _allSamples = [];
     private IReadOnlyList<TrendSegment> _fiveHourSegments = [];
     private IReadOnlyList<TrendSegment> _weeklySegments = [];
+    // S1 配套修复:15 秒定时器每跳都会调 Load(),历史文件没变化时(长度+写入时间均未变)
+    // 直接复用上次解析结果,避免随 history.jsonl 增长出现的周期性 UI 卡顿
+    private long _historyFileLength = -1;
+    private DateTime _historyFileWriteUtc = DateTime.MinValue;
+    private bool _trendsDirty = true;
 
     public MainViewModel(
         string projectRoot,
@@ -72,6 +77,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(IsRange24h));
                 OnPropertyChanged(nameof(IsRange7d));
                 OnPropertyChanged(nameof(IsRange30d));
+                _trendsDirty = true;
                 RebuildTrends();
             }
         }
@@ -96,7 +102,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
         // P1-7 修复:Load() 内部统一读一次 history,然后传给 RebuildTrends,
         // 避免之前 LoadHistory 读完丢弃 + RebuildTrends 再读一次的双重 IO
         var historyPath = Path.Combine(_projectRoot, ".cache", "history.jsonl");
-        _allSamples = _historyReader.Read(historyPath, now.AddDays(-90));
+        var fileInfo = new FileInfo(historyPath);
+        var unchanged = fileInfo.Exists
+            && fileInfo.Length == _historyFileLength
+            && fileInfo.LastWriteTimeUtc == _historyFileWriteUtc;
+        if (!unchanged)
+        {
+            _allSamples = _historyReader.Read(historyPath, now.AddDays(-90));
+            _historyFileLength = fileInfo.Exists ? fileInfo.Length : -1;
+            _historyFileWriteUtc = fileInfo.Exists ? fileInfo.LastWriteTimeUtc : DateTime.MinValue;
+            _trendsDirty = true;
+        }
         RebuildTrends();
     }
 
@@ -161,9 +177,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         // P1-7 + P2-9 修复:用 _allSamples 缓存,不再重复 IO;
         // TrendSeriesBuilder 内部会按 selectedRange 过滤,无需在 HistoryReader 收窄
+        // S1 配套修复:数据与区间都没变时跳过重建 —— 否则每 15 秒都会生成新集合实例,
+        // 触发 TrendChart(AffectsRender)对最多数万点的全量重绘
+        if (!_trendsDirty)
+            return;
         var now = _clock();
         FiveHourSegments = TrendSeriesBuilder.Build(_allSamples, _selectedRange, now, s => s.FiveHourPercent);
         WeeklySegments = TrendSeriesBuilder.Build(_allSamples, _selectedRange, now, s => s.WeeklyPercent);
+        _trendsDirty = false;
     }
 
     public async Task RefreshAsync()

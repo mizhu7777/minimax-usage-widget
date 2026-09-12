@@ -133,4 +133,32 @@ public sealed class MainViewModelTests
         // cache 自己说 error,Load 应保留 ErrorMessage
         Assert.Equal("API Key 无效", vm.ErrorMessage);
     }
+
+    // S1 配套修复回归:history.jsonl 变化后第二次 Load 必须重新读取
+    // (追加一个间隔 >45 分钟的点使分段数增加,证明新数据确实进入了趋势)
+    [Fact]
+    public void ReloadsHistoryAfterFileGrows()
+    {
+        using var temp = new TempDirectory();
+        temp.WriteFile(".cache/cache.json", """
+            {"schema_version":2,"provider_id":"minimax","status":"ok","plan":"X",
+             "last_update":"2026-07-22T12:00:00+08:00","error":null,"items":[
+               {"model_id":"general","window_id":"5h","name":"5h","remaining_pct":50,"reset_at":null,"reset_text":""},
+               {"model_id":"general","window_id":"weekly","name":"weekly","remaining_pct":80,"reset_at":null,"reset_text":""}]}
+            """);
+        var historyPath = System.IO.Path.Combine(temp.Path, ".cache", "history.jsonl");
+        var line1 = """{"schema_version":1,"provider_id":"minimax","recorded_at":"2026-07-22T06:00:00+08:00","windows":[{"model_id":"general","window_id":"5h","remaining_pct":50},{"model_id":"general","window_id":"weekly","remaining_pct":90}]}""";
+        var line2 = """{"schema_version":1,"provider_id":"minimax","recorded_at":"2026-07-22T06:30:00+08:00","windows":[{"model_id":"general","window_id":"5h","remaining_pct":60},{"model_id":"general","window_id":"weekly","remaining_pct":90}]}""";
+        var line3 = """{"schema_version":1,"provider_id":"minimax","recorded_at":"2026-07-22T08:00:00+08:00","windows":[{"model_id":"general","window_id":"5h","remaining_pct":70},{"model_id":"general","window_id":"weekly","remaining_pct":90}]}""";
+        System.IO.File.WriteAllText(historyPath, line1 + "\n" + line2 + "\n");
+
+        var now = DateTimeOffset.Parse("2026-07-22T12:00:00+08:00");
+        var vm = new MainViewModel(temp.Path, new UsageCacheReader(), new HistoryReader(), () => now);
+        vm.Load();
+        Assert.Single(vm.FiveHourSegments); // 06:00 与 06:30 间隔 30 分钟 < 45 分钟,同段
+
+        System.IO.File.AppendAllText(historyPath, line3 + "\n");
+        vm.Load();
+        Assert.Equal(2, vm.FiveHourSegments.Count); // 08:00 与 06:30 间隔 90 分钟,新段
+    }
 }

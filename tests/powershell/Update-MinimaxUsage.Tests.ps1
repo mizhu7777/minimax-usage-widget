@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\TestHarness.ps1"
 . "$PSScriptRoot\..\..\scripts\Update-MinimaxUsage.ps1" -NoRun
 
@@ -48,24 +48,35 @@ It 'selects general model values regardless of API order' {
     }
 }
 
-It 'appends when values change and waits 15 minutes when unchanged' {
+It 'heartbeats every 15 minutes, throttles changes to 10 minutes, ignores reset_at jitter' {
     $now = [DateTimeOffset]::Parse('2026-07-22T12:00:00+08:00').ToUniversalTime()
     $base = $now.ToString('o')
-    $win = @(
-        [pscustomobject]@{ model_id='general'; window_id='5h'; remaining_pct=54; reset_at='2026-07-22T16:00:00Z' },
-        [pscustomobject]@{ model_id='general'; window_id='weekly'; remaining_pct=87; reset_at='2026-07-26T16:00:00Z' }
+    # S1 修复回归:生产环境 reset_at 每次由本地时钟+remains_time 现算、带亚秒抖动,
+    # last 与 current 的 reset_at 必须故意不同 —— 验证比较键已不再包含它
+    $winCurrent = @(
+        [pscustomobject]@{ model_id='general'; window_id='5h'; remaining_pct=54; reset_at='2026-07-22T16:00:00.1111111Z' },
+        [pscustomobject]@{ model_id='general'; window_id='weekly'; remaining_pct=87; reset_at='2026-07-26T16:00:00.2222222Z' }
     )
-    $current = [pscustomobject]@{ recorded_at = $base; windows = $win }
-    $sameRecent = [pscustomobject]@{ recorded_at = $now.AddMinutes(-10).ToString('o'); windows = $win }
-    $sameOld    = [pscustomobject]@{ recorded_at = $now.AddMinutes(-16).ToString('o'); windows = $win }
-    $changed    = [pscustomobject]@{ recorded_at = $now.AddMinutes(-5).ToString('o'); windows = @(
-        [pscustomobject]@{ model_id='general'; window_id='5h'; remaining_pct=53; reset_at='2026-07-22T16:00:00Z' },
-        [pscustomobject]@{ model_id='general'; window_id='weekly'; remaining_pct=87; reset_at='2026-07-26T16:00:00Z' }
+    $winLast = @(
+        [pscustomobject]@{ model_id='general'; window_id='5h'; remaining_pct=54; reset_at='2026-07-22T16:00:00.9999999Z' },
+        [pscustomobject]@{ model_id='general'; window_id='weekly'; remaining_pct=87; reset_at='2026-07-26T16:00:00.8888888Z' }
+    )
+    $current = [pscustomobject]@{ recorded_at = $base; windows = $winCurrent }
+    $sameRecent = [pscustomobject]@{ recorded_at = $now.AddMinutes(-10).ToString('o'); windows = $winLast }
+    $sameOld    = [pscustomobject]@{ recorded_at = $now.AddMinutes(-16).ToString('o'); windows = $winLast }
+    $changedFar = [pscustomobject]@{ recorded_at = $now.AddMinutes(-12).ToString('o'); windows = @(
+        [pscustomobject]@{ model_id='general'; window_id='5h'; remaining_pct=53; reset_at='2026-07-22T16:00:00.9999999Z' },
+        [pscustomobject]@{ model_id='general'; window_id='weekly'; remaining_pct=87; reset_at='2026-07-26T16:00:00.8888888Z' }
+    )}
+    $changedRecent = [pscustomobject]@{ recorded_at = $now.AddMinutes(-3).ToString('o'); windows = @(
+        [pscustomobject]@{ model_id='general'; window_id='5h'; remaining_pct=53; reset_at='2026-07-22T16:00:00.9999999Z' },
+        [pscustomobject]@{ model_id='general'; window_id='weekly'; remaining_pct=87; reset_at='2026-07-26T16:00:00.8888888Z' }
     )}
 
-    Assert-True (-not (Test-ShouldAppendHistory -Last $sameRecent -Current $current -Now $now)) 'unchanged 10-minute sample must be skipped'
+    Assert-True (-not (Test-ShouldAppendHistory -Last $sameRecent -Current $current -Now $now)) 'unchanged values with reset_at jitter must be skipped within 15 minutes'
     Assert-True (Test-ShouldAppendHistory -Last $sameOld -Current $current -Now $now) '15-minute heartbeat must append'
-    Assert-True (Test-ShouldAppendHistory -Last $changed -Current $current -Now $now) 'changed value must append'
+    Assert-True (Test-ShouldAppendHistory -Last $changedFar -Current $current -Now $now) 'changed value after 10 minutes must append'
+    Assert-True (-not (Test-ShouldAppendHistory -Last $changedRecent -Current $current -Now $now)) 'changed value within 10 minutes must be throttled'
 }
 
 It 'prunes snapshots older than 90 days and skips malformed lines' {

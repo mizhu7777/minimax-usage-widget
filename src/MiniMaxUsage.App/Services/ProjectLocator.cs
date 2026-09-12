@@ -26,8 +26,10 @@ public static class ProjectLocator
             }
 
             // Walk up from baseDirectory looking for the scripts directory
+            // P4 修复:8 层 —— dotnet run 的输出在 bin\Debug\net8.0-windows\win-x64\(带 RID),
+            // 距项目根 7 次校验,原来 4 层连 MiniMaxUsage.App 都没走到就停了
             var current = Path.GetFullPath(baseDirectory);
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < 8; i++)
             {
                 var result = Validate(current);
                 if (result.IsSuccess)

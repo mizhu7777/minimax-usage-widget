@@ -58,10 +58,3 @@ end
 function Update()
   return computeStatus()
 end
-
--- 其他 measure 也能复用本文件的读文件能力
-function GetReset1() return read_first_line(project .. '\\.cache\\reset1.txt') or '' end
-function GetReset2() return read_first_line(project .. '\\.cache\\reset2.txt') or '' end
-function GetUpdated() return read_first_line(project .. '\\.cache\\updated.txt') or '' end
-function GetPct1() return read_first_line(project .. '\\.cache\\pct1.txt') or '' end
-function GetPct2() return read_first_line(project .. '\\.cache\\pct2.txt') or '' end

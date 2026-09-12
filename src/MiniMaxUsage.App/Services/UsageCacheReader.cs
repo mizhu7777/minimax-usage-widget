@@ -27,7 +27,13 @@ public sealed class UsageCacheReader
         var five = document.Items.FirstOrDefault(x => x.ModelId == "general" && x.WindowId == "5h");
         var weekly = document.Items.FirstOrDefault(x => x.ModelId == "general" && x.WindowId == "weekly");
         if (five is null || weekly is null || document.LastUpdate is null)
+        {
+            // P2 修复:首次失败(无旧数据可保留)时优先返回缓存里的真实错误,
+            // 否则"API Key 无效"等根因被"缺少窗口"覆盖,误导排障
+            if (document.Status == "error" && !string.IsNullOrEmpty(document.Error))
+                return UsageReadResult.Failure(document.Error);
             return UsageReadResult.Failure("缓存缺少 general 模型的 5h/weekly 窗口或更新时间。");
+        }
 
         QuotaWindow Convert(UsageWindowDocument item) => new(
             item.WindowId,

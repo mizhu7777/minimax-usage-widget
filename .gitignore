@@ -28,3 +28,6 @@ tests/**/obj/
 
 # 视觉设计讨论临时文件
 .superpowers/
+
+# 安装器生成的机器相关文件（P5 修复:含本机绝对路径,由 Install-Task.ps1 重新生成）
+Skins/MiniMaxUsage/@Resources/Variables.inc

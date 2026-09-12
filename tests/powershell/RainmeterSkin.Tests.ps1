@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\TestHarness.ps1"
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $iniPath = Join-Path $root 'Skins\MiniMaxUsage\MiniMaxUsage.ini'
@@ -13,7 +13,6 @@ It 'uses generated variables and WebParser with correct config' {
     Assert-True ($ini -match 'MeasureUpdated') 'MeasureUpdated missing'
     Assert-True ($ini -match 'MeasureStatusText') 'MeasureStatusText missing'
     Assert-True ($ini -match 'MeasureDetailText') 'MeasureDetailText missing'
-    Assert-True ($ini -match 'SkinWidth=280') 'SkinWidth must be 280'
 }
 
 It 'contains two complete quota rings' {
@@ -31,7 +30,8 @@ It 'has a freshness script that reads cache text files' {
     Assert-True (Test-Path $luaPath) 'Freshness.lua missing'
     $lua = Get-Content $luaPath -Raw -Encoding UTF8
     Assert-True ($lua -match 'status\.txt') 'status.txt reference missing'
-    Assert-True ($lua -match 'reset1\.txt') 'reset1.txt reference missing'
+    # O5 修复后 Lua 只保留 Update() 入口与新鲜度判定,不再携带无调用方的 Get* 辅助函数
+    Assert-True ($lua -match 'function Update\(\)') 'Update() entry point missing'
 }
 
 function Get-IniValue {
@@ -46,7 +46,7 @@ function Get-IniValue {
 }
 
 It 'uses compact 280px canvas without clipping the rings' {
-    Assert-Equal '280' (Get-IniValue 'Rainmeter' 'SkinWidth') 'SkinWidth must be 280'
+    # O4 修复:画布尺寸由 MeterBackground 决定(SkinWidth 不是有效的 Rainmeter 选项,已从 ini 移除)
     Assert-True ((Get-IniValue 'MeterBackground' 'Shape') -match 'Rectangle 0,0,280,165') 'background must match 280px canvas'
 
     $ring1X = [int](Get-IniValue 'MeterRing1' 'X')

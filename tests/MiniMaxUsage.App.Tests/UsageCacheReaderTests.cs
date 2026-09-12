@@ -105,4 +105,21 @@ public sealed class UsageCacheReaderTests
         Assert.False(result.IsSuccess);
         Assert.NotNull(result.FatalError);
     }
+
+    // P2 修复回归:首次失败(无旧数据可保留)时,应返回缓存里的真实错误而不是"缺少窗口"
+    [Fact]
+    public void ErrorStatusWithMissingWindowsReturnsRealError()
+    {
+        var json = """
+        {"schema_version":2,"provider_id":"minimax","status":"error","plan":"MiniMax TokenPlan",
+         "last_update":null,"error":"API Key 无效（status_code=2049）","items":[]}
+        """;
+        using var temp = new TempDirectory();
+        var path = temp.WriteFile("cache.json", json);
+
+        var result = new Services.UsageCacheReader().Read(path, DateTimeOffset.Now);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("API Key 无效（status_code=2049）", result.FatalError);
+    }
 }

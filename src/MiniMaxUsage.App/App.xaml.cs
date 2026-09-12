@@ -47,9 +47,12 @@ public partial class App : Application
     {
         LogFatal("Dispatcher", e.Exception);
         var msg = e.Exception.Message + Environment.NewLine + Environment.NewLine
-            + "详细信息已写入 widget.log";
-        MessageBox.Show(msg, "MiniMax Usage - 未捕获异常", MessageBoxButton.OK, MessageBoxImage.Error);
-        e.Handled = true;  // 不让进程崩
+            + "详细信息已写入 widget.log" + Environment.NewLine + Environment.NewLine
+            + "是否继续运行？应用状态可能已不稳定，选择「否」退出。";
+        // O8 修复:不再无条件吞掉异常 —— 由用户决定继续(可能半坏状态)还是退出,
+        // 避免"界面看起来活着但数据/绑定已经坏掉"的静默故障
+        var choice = MessageBox.Show(msg, "MiniMax Usage - 未捕获异常", MessageBoxButton.YesNo, MessageBoxImage.Error);
+        e.Handled = choice == MessageBoxResult.Yes;
     }
 
     private static void LogFatal(string source, Exception? ex)
