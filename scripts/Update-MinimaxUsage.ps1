@@ -354,9 +354,10 @@ function Test-ShouldAppendHistory {
     $ageMinutes = ($Now - $lastAt).TotalMinutes
     # 心跳:超过 15 分钟必追加,保证趋势图的时间基准不中断
     if ($ageMinutes -ge 15) { return $true }
-    # S1 修复:值有变化也至少间隔 10 分钟才记录 —— 追加速度上限 144 条/天,
-    # 90 天约 1.3 万行,修剪(下方正则版)在任务计划 2 分钟时限内绰绰有余
-    if ((Get-HistoryWindowKey $Last) -ne (Get-HistoryWindowKey $Current) -and $ageMinutes -ge 10) { return $true }
+    # P1-4 修复(agy §7.2 仲裁):变化节流 10→2 分钟 —— 10 分钟窗口内"跌下去又重置回原值"
+    # 的短期波动会因键相同(回落到上次快照值)被整体抹掉;2 分钟上限 720 条/天,
+    # 既保留断崖消耗与重置跳变,又远低于"每分钟一条"的无界增长
+    if ((Get-HistoryWindowKey $Last) -ne (Get-HistoryWindowKey $Current) -and $ageMinutes -ge 2) { return $true }
     return $false
 }
 
@@ -375,17 +376,18 @@ function Select-RetainedHistoryLines {
     # ExecutionTimeLimit=PT2M 被强杀,而"已修剪"标记在重写完成后才写,导致修剪永远完不成。
     # 正则版 10 万行毫秒级;无 recorded_at 的坏行同样被丢弃,语义与原实现一致
     $cutoff = $Now.AddDays(-90)
-    $result = @()
+    # P2-14 修复:List[string] 替代 @() += 累加,消除 O(N²) 数组全量拷贝
+    $kept = [System.Collections.Generic.List[string]]::new()
     foreach ($line in $Lines) {
         if ($line -match '"recorded_at":"([^"]+)"') {
             try {
-                if ([DateTimeOffset]::Parse($Matches[1]) -ge $cutoff) { $result += $line }
+                if ([DateTimeOffset]::Parse($Matches[1]) -ge $cutoff) { $kept.Add($line) }
             } catch {
                 continue
             }
         }
     }
-    return $result
+    return $kept.ToArray()
 }
 
 function Add-HistorySnapshot {
@@ -426,7 +428,8 @@ function Invoke-RefreshOnce {
         # 互斥体已存在(另一实例在跑)→ 我们没所有权,不能释放它
         $mutex.Dispose()
         Write-Log 'WARN' "另一个刷新实例正在运行,本次跳过（互斥体 $mutexName）"
-        return $false
+        # P0-3 修复:返回 'busy' 而非 $false —— 与真实失败区分,主流程用专用退出码 2 表达
+        return 'busy'
     }
     try {
         try {
@@ -464,7 +467,7 @@ function Invoke-RefreshOnce {
 
             # 清理解密后的 key
             $apiKey = $null
-            return $true
+            return 'ok'
 
         } catch {
             # 失败：写入错误状态（保留上次数据供皮肤降级显示）
@@ -490,7 +493,7 @@ function Invoke-RefreshOnce {
                 # 不能让它击穿到主 catch,否则会丢整个错误降级路径
                 try { Write-Log 'ERROR' "写入错误缓存失败: $_" } catch { }
             }
-            return $false
+            return 'error'
         }
     } finally {
         # N1 修复:仅当我们真的获得了所有权(创建了新互斥体)时才释放它
@@ -528,6 +531,10 @@ if ($Loop) {
         Start-Sleep -Seconds $loopIntervalSec
     }
 } else {
-    $ok = Invoke-RefreshOnce
-    if ($ok) { exit 0 } else { exit 1 }
+    $outcome = Invoke-RefreshOnce
+    # P0-3 修复:专用退出码 —— 0=成功,2=已有刷新在运行(非错误),1=真实失败;
+    # 之前"跳过"与"失败"共用 exit 1,WPF 端无法区分
+    if ($outcome -eq 'ok') { exit 0 }
+    elseif ($outcome -eq 'busy') { exit 2 }
+    else { exit 1 }
 }

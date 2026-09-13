@@ -14,6 +14,17 @@ public sealed class TrendChart : FrameworkElement
         DependencyProperty.Register(nameof(WeeklySegments), typeof(IReadOnlyList<TrendSegment>), typeof(TrendChart),
             new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
 
+    // P1-5 修复:X 轴不再自适应数据点,而由 ViewModel 锚定为 [Now-区间, Now] ——
+    // 新用户数据不足一个区间时,24h/7d/30d 切换同样能看到正确的窗口跨度,
+    // 右边界始终是当前时刻而非最后一次采样
+    public static readonly DependencyProperty AxisStartProperty =
+        DependencyProperty.Register(nameof(AxisStart), typeof(DateTimeOffset), typeof(TrendChart),
+            new FrameworkPropertyMetadata(default(DateTimeOffset), FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public static readonly DependencyProperty AxisEndProperty =
+        DependencyProperty.Register(nameof(AxisEnd), typeof(DateTimeOffset), typeof(TrendChart),
+            new FrameworkPropertyMetadata(default(DateTimeOffset), FrameworkPropertyMetadataOptions.AffectsRender));
+
     public IReadOnlyList<TrendSegment>? FiveHourSegments
     {
         get => (IReadOnlyList<TrendSegment>?)GetValue(FiveHourSegmentsProperty);
@@ -24,6 +35,18 @@ public sealed class TrendChart : FrameworkElement
     {
         get => (IReadOnlyList<TrendSegment>?)GetValue(WeeklySegmentsProperty);
         set => SetValue(WeeklySegmentsProperty, value);
+    }
+
+    public DateTimeOffset AxisStart
+    {
+        get => (DateTimeOffset)GetValue(AxisStartProperty);
+        set => SetValue(AxisStartProperty, value);
+    }
+
+    public DateTimeOffset AxisEnd
+    {
+        get => (DateTimeOffset)GetValue(AxisEndProperty);
+        set => SetValue(AxisEndProperty, value);
     }
 
     private static readonly Brush FiveHourColor = new SolidColorBrush(Color.FromRgb(37, 131, 247));
@@ -60,9 +83,10 @@ public sealed class TrendChart : FrameworkElement
 
         if (allPoints.Count == 0) return;
 
-        var minTime = allPoints.Min(p => p.RecordedAt);
-        var maxTime = allPoints.Max(p => p.RecordedAt);
-        if (maxTime == minTime) maxTime = minTime.AddHours(1);
+        // P1-5 修复:优先使用 ViewModel 锚定的轴窗口;未设置(如旧调用方)时回退到数据范围
+        var minTime = AxisStart != default ? AxisStart : allPoints.Min(p => p.RecordedAt);
+        var maxTime = AxisEnd != default ? AxisEnd : allPoints.Max(p => p.RecordedAt);
+        if (maxTime <= minTime) maxTime = minTime.AddHours(1);
 
         var padding = new Thickness(40, 20, 20, 35);
         var chartWidth = RenderSize.Width - padding.Left - padding.Right;
@@ -84,7 +108,13 @@ public sealed class TrendChart : FrameworkElement
             dc.DrawText(label, new Point(padding.Left - label.WidthIncludingTrailingWhitespace - 4, yPos - label.Height / 2));
         }
 
-        double XPos(DateTimeOffset t) => padding.Left + chartWidth * (t.ToUniversalTime().Ticks - minTime.ToUniversalTime().Ticks) / (maxTime.ToUniversalTime().Ticks - minTime.ToUniversalTime().Ticks);
+        double XPos(DateTimeOffset t)
+        {
+            // P1-5 修复:数据点可能略超出锚定窗口(重建间隔内新增),钳制到绘图区
+            var fraction = (t - minTime).Ticks / (double)(maxTime - minTime).Ticks;
+            fraction = Math.Clamp(fraction, 0.0, 1.0);
+            return padding.Left + chartWidth * fraction;
+        }
         double YPos(double v) => padding.Top + chartHeight * (1 - v / 100.0);
 
         // Draw segments
@@ -93,7 +123,7 @@ public sealed class TrendChart : FrameworkElement
 
         // X-axis time labels
         DrawTimeLabel(dc, minTime, padding.Left, padding.Top + chartHeight + 4, TextAlignment.Left);
-        DrawTimeLabel(dc, minTime.AddTicks((maxTime.ToUniversalTime().Ticks - minTime.ToUniversalTime().Ticks) / 2), padding.Left + chartWidth / 2, padding.Top + chartHeight + 4, TextAlignment.Center);
+        DrawTimeLabel(dc, minTime.AddTicks((maxTime - minTime).Ticks / 2), padding.Left + chartWidth / 2, padding.Top + chartHeight + 4, TextAlignment.Center);
         DrawTimeLabel(dc, maxTime, padding.Left + chartWidth, padding.Top + chartHeight + 4, TextAlignment.Right);
     }
 
@@ -128,6 +158,14 @@ public sealed class TrendChart : FrameworkElement
 
         foreach (var segment in segments)
         {
+            // P1-6 修复:单点分段画数据圆点,而不是静默跳过(首次采集时图表不再空无一物)
+            if (segment.Points.Count == 1)
+            {
+                var point = segment.Points[0];
+                dc.DrawEllipse(color, null, new Point(xPos(point.RecordedAt), yPos(point.Value)), 3, 3);
+                continue;
+            }
+
             if (segment.Points.Count < 2) continue;
 
             var geo = new StreamGeometry();

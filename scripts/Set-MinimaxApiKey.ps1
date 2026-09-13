@@ -78,7 +78,8 @@ Write-Host '--- 立即运行一次刷新验证 ---' -ForegroundColor Cyan
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $updateScript
 $exitCode = $LASTEXITCODE
 
-if ($exitCode -eq 0) {
+# P0-3 修复:退出码 2 = 已有刷新实例在运行(计划任务抢占),验证本身没有失败
+if ($exitCode -eq 0 -or $exitCode -eq 2) {
     Write-Host ''
     Write-Host '=== 配置完成 ===' -ForegroundColor Green
     Write-Host '下一步: 运行 scripts\Install-Task.ps1 注册定时任务' -ForegroundColor Yellow

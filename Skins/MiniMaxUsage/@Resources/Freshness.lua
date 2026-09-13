@@ -55,6 +55,18 @@ local function computeStatus()
 end
 
 -- Rainmeter Script measure 必需的主回调
+-- P2-12 修复:按状态给 [MeterStatusBadge] 报警变色 —— 稳定浅蓝 / 已过期橙 / 错误红 / 未知灰
+local STATUS_COLORS = {
+  ['● 稳定']   = '79,195,247,255',
+  ['● 已过期'] = '245,158,11,255',
+  ['● 错误']   = '239,68,68,255',
+  ['● 未知']   = '158,166,180,255',
+}
+
 function Update()
-  return computeStatus()
+  local status = computeStatus()
+  SKIN:Bang('!SetOption', 'MeterStatusBadge', 'FontColor', STATUS_COLORS[status] or '79,195,247,255')
+  SKIN:Bang('!UpdateMeter', 'MeterStatusBadge')
+  SKIN:Bang('!Redraw')
+  return status
 end

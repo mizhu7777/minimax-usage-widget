@@ -23,13 +23,24 @@ $xmlFile = Join-Path $scriptDir 'MiniMaxUsageRefresh.xml'
 function Get-InteractiveUser {
     try {
         $explorer = Get-Process -Name explorer -ErrorAction Stop | Select-Object -First 1
-        $owner = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter "ProcessId=$($explorer.Id)") -MethodName GetOwner
+        $owner = Invoke-CimMethod -InputObject (Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$($explorer.Id)") -MethodName GetOwner
         if ($owner -and $owner.User) {
             if ($owner.Domain) { return "$($owner.Domain)\$($owner.User)" }
             return $owner.User
         }
     } catch { }
     return [Security.Principal.WindowsIdentity]::GetCurrent().Name
+}
+
+# P1-9 修复:Rainmeter 实际加载的是用户 Documents(或注册表 SkinPath)下的皮肤副本,
+# 只更新仓库目录不会让用户皮肤生效。提权账户可能不是桌面用户,需解析交互用户的资料目录
+function Get-InteractiveUserProfileDir {
+    try {
+        $sid = ([Security.Principal.NTAccount](Get-InteractiveUser)).Translate([Security.Principal.SecurityIdentifier]).Value
+        $profilePath = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid" -Name ProfileImagePath -ErrorAction Stop).ProfileImagePath
+        if ($profilePath) { return $profilePath }
+    } catch { }
+    return $env:USERPROFILE
 }
 
 # === 复用函数：生成 Rainmeter 路径变量文件 ===
@@ -212,6 +223,25 @@ if (Test-Path $skinDir) {
     }
 } else {
     Write-Host "[WARN] 未找到皮肤目录 $skinDir,跳过 Variables.inc 生成" -ForegroundColor Yellow
+}
+
+# P1-9 修复:同步 Variables.inc 到 Rainmeter 实际加载的皮肤目录(注册表 SkinPath 优先,
+# 其次交互用户与提权用户的 Documents\Rainmeter\Skins),已安装皮肤才会显示新数据
+$rainmeterRoots = @()
+$regSkinPath = (Get-ItemProperty -Path 'HKCU:\Software\Rainmeter' -Name SkinPath -ErrorAction SilentlyContinue).SkinPath
+if ($regSkinPath) { $rainmeterRoots += $regSkinPath }
+$rainmeterRoots += Join-Path (Get-InteractiveUserProfileDir) 'Documents\Rainmeter\Skins'
+$rainmeterRoots += Join-Path $env:USERPROFILE 'Documents\Rainmeter\Skins'
+foreach ($skinsRoot in ($rainmeterRoots | Select-Object -Unique)) {
+    $installedSkin = Join-Path $skinsRoot 'MiniMaxUsage'
+    if (Test-Path (Join-Path $installedSkin 'MiniMaxUsage.ini')) {
+        try {
+            Write-RainmeterVariables -ProjectDir $repoRoot -SkinDir $installedSkin
+            Write-Host "[OK]  已同步 Rainmeter 皮肤变量: $installedSkin\@Resources\Variables.inc" -ForegroundColor Green
+        } catch {
+            Write-Host "[WARN] 同步 Rainmeter 变量到 $installedSkin 失败: $_" -ForegroundColor Yellow
+        }
+    }
 }
 
 Write-Host ''

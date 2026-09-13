@@ -161,4 +161,51 @@ public sealed class MainViewModelTests
         vm.Load();
         Assert.Equal(2, vm.FiveHourSegments.Count); // 08:00 与 06:30 间隔 90 分钟,新段
     }
+
+    // P2-13 修复回归:缓存带精确 reset_at 时,倒计时按当前时钟动态计算(而非照搬静态文本);
+    // 无 reset_at 时回退缓存文本
+    [Fact]
+    public void FormatsResetCountdownDynamicallyFromResetAt()
+    {
+        using var temp = new TempDirectory();
+        temp.WriteFile(".cache/cache.json", """
+            {"schema_version":2,"provider_id":"minimax","status":"ok","plan":"X",
+             "last_update":"2026-07-22T12:00:00+08:00","error":null,"items":[
+               {"model_id":"general","window_id":"5h","name":"5h","remaining_pct":50,"reset_at":"2026-07-22T13:30:00+08:00","reset_text":"旧静态文本"},
+               {"model_id":"general","window_id":"weekly","name":"weekly","remaining_pct":80,"reset_at":null,"reset_text":"4天后"}]}
+            """);
+        temp.WriteFile(".cache/history.jsonl", "");
+
+        var now = DateTimeOffset.Parse("2026-07-22T12:00:00+08:00");
+        var vm = new MainViewModel(temp.Path, new UsageCacheReader(), new HistoryReader(), () => now);
+        vm.Load();
+
+        Assert.Equal("1小时30分后", vm.FiveHourResetText);
+        Assert.Equal("4天后", vm.WeeklyResetText);
+    }
+
+    // P1-5 修复回归:趋势轴锚定为 [Now-区间, Now];切换区间后窗口随之更新
+    [Fact]
+    public void AnchorsTrendAxisToSelectedRangeAndNow()
+    {
+        using var temp = new TempDirectory();
+        temp.WriteFile(".cache/cache.json", """
+            {"schema_version":2,"provider_id":"minimax","status":"ok","plan":"X",
+             "last_update":"2026-07-22T12:00:00+08:00","error":null,"items":[
+               {"model_id":"general","window_id":"5h","name":"5h","remaining_pct":50,"reset_at":null,"reset_text":""},
+               {"model_id":"general","window_id":"weekly","name":"weekly","remaining_pct":80,"reset_at":null,"reset_text":""}]}
+            """);
+        temp.WriteFile(".cache/history.jsonl", "");
+
+        var now = DateTimeOffset.Parse("2026-07-22T12:00:00+08:00");
+        var vm = new MainViewModel(temp.Path, new UsageCacheReader(), new HistoryReader(), () => now);
+        vm.Load();
+
+        Assert.Equal(now, vm.AxisEnd);
+        Assert.Equal(now.AddDays(-7), vm.AxisStart); // 默认 7 天视图
+
+        vm.SelectedRange = TrendRange.Hours24;
+        Assert.Equal(now.AddHours(-24), vm.AxisStart);
+        Assert.Equal(now, vm.AxisEnd);
+    }
 }

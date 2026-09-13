@@ -66,6 +66,13 @@ public static class PowerShellRefreshService
                 return new RefreshResult(false, $"刷新脚本超时(>{timeout.TotalSeconds:F0}s)。");
             }
 
+            if (process.ExitCode == 2)
+            {
+                // P0-3 修复:退出码 2 = 另一个刷新(计划任务)正在运行,缓存正被其更新,
+                // 不作为失败处理 —— 调用方随后 Load() 直接读取新鲜缓存即可
+                return new RefreshResult(true, null);
+            }
+
             if (process.ExitCode != 0)
                 return new RefreshResult(false, $"刷新脚本退出码: {process.ExitCode}");
 

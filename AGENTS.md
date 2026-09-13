@@ -42,7 +42,7 @@ Windows desktop widget for the MiniMax Coding Plan usage, with a self-contained 
 ## Testing instructions
 
 - All three test suites must be green before pushing:
-  - C# xUnit (34 tests)
+  - C# xUnit (44 tests)
   - `Update-MinimaxUsage.Tests.ps1` (PowerShell collector logic, 5 tests)
   - `RainmeterSkin.Tests.ps1` (skin wiring + Lua freshness check, 8 tests)
 - Add a unit test in `tests/MiniMaxUsage.App.Tests/` for every new C# behavior. Use the existing `TempDirectory` helper for filesystem fixtures.

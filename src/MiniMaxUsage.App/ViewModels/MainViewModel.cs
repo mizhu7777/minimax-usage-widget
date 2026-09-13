@@ -35,6 +35,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private long _historyFileLength = -1;
     private DateTime _historyFileWriteUtc = DateTime.MinValue;
     private bool _trendsDirty = true;
+    // P1-7 修复:历史文件长时间静止时,趋势窗口仍需每 5 分钟强制重建一次,
+    // 让 24h/7d/30d 滑动窗口与轴终点随真实时间推移
+    private DateTimeOffset _lastTrendsRebuild = DateTimeOffset.MinValue;
+    // P1-5 修复:趋势轴锚定 [Now-区间, Now],由 RebuildTrends 随每次重建刷新
+    private DateTimeOffset _axisStart;
+    private DateTimeOffset _axisEnd;
 
     public MainViewModel(
         string projectRoot,
@@ -95,6 +101,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set => SetField(ref _weeklySegments, value);
     }
 
+    // P1-5 修复:趋势轴窗口,供 TrendChart 锚定 X 轴
+    public DateTimeOffset AxisStart
+    {
+        get => _axisStart;
+        private set => SetField(ref _axisStart, value);
+    }
+
+    public DateTimeOffset AxisEnd
+    {
+        get => _axisEnd;
+        private set => SetField(ref _axisEnd, value);
+    }
+
     public void Load()
     {
         var now = _clock();
@@ -108,11 +127,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
             && fileInfo.LastWriteTimeUtc == _historyFileWriteUtc;
         if (!unchanged)
         {
-            _allSamples = _historyReader.Read(historyPath, now.AddDays(-90));
-            _historyFileLength = fileInfo.Exists ? fileInfo.Length : -1;
-            _historyFileWriteUtc = fileInfo.Exists ? fileInfo.LastWriteTimeUtc : DateTime.MinValue;
-            _trendsDirty = true;
+            // P1-8 修复:Read 与采集器竞争时返回 null(而非抛异常),保留上次数据待下个周期重试
+            var read = _historyReader.Read(historyPath, now.AddDays(-90));
+            if (read is not null)
+            {
+                _allSamples = read;
+                _historyFileLength = fileInfo.Exists ? fileInfo.Length : -1;
+                _historyFileWriteUtc = fileInfo.Exists ? fileInfo.LastWriteTimeUtc : DateTime.MinValue;
+                _trendsDirty = true;
+            }
         }
+
+        // P1-7 修复:即使历史静止,每 5 分钟也强制重建一次,滑动窗口与轴终点才会前移
+        if (now - _lastTrendsRebuild >= TimeSpan.FromMinutes(5))
+            _trendsDirty = true;
+
         RebuildTrends();
     }
 
@@ -143,8 +172,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
         WeeklyPercent = usage.Weekly.RemainingPercent;
         FiveHourSeverity = QuotaSeverityRules.FromPercent(FiveHourPercent);
         WeeklySeverity = QuotaSeverityRules.FromPercent(WeeklyPercent);
-        FiveHourResetText = usage.FiveHour.ResetText;
-        WeeklyResetText = usage.Weekly.ResetText;
+        // P2-13 修复:有精确 reset_at 时按当前时钟动态计算倒计时(每 15 秒 Load 刷新),
+        // 替代采集时刻写入缓存的静态文本;无 reset_at(降级数据)时回退缓存文本
+        FiveHourResetText = FormatResetCountdown(usage.FiveHour.ResetAt, now, usage.FiveHour.ResetText);
+        WeeklyResetText = FormatResetCountdown(usage.Weekly.ResetAt, now, usage.Weekly.ResetText);
         LastUpdatedText = $"最后更新: {usage.LastUpdate.ToLocalTime():HH:mm}";
 
         // P1-12 + N3 修复:ErrorMessage 的覆盖/清空规则:
@@ -184,7 +215,46 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var now = _clock();
         FiveHourSegments = TrendSeriesBuilder.Build(_allSamples, _selectedRange, now, s => s.FiveHourPercent);
         WeeklySegments = TrendSeriesBuilder.Build(_allSamples, _selectedRange, now, s => s.WeeklyPercent);
+        // P1-5 修复:轴窗口锚定为 [Now-区间, Now]
+        AxisEnd = now;
+        AxisStart = now - TrendDuration(_selectedRange);
         _trendsDirty = false;
+        _lastTrendsRebuild = now;
+    }
+
+    private static TimeSpan TrendDuration(TrendRange range) => range switch
+    {
+        TrendRange.Hours24 => TimeSpan.FromHours(24),
+        TrendRange.Days7 => TimeSpan.FromDays(7),
+        TrendRange.Days30 => TimeSpan.FromDays(30),
+        _ => throw new ArgumentOutOfRangeException(nameof(range))
+    };
+
+    /// <summary>
+    /// P2-13 修复:按当前时钟把 reset_at 换算为倒计时文本,格式与采集脚本 Format-ResetText 一致;
+    /// 已过期返回"即将重置",无 reset_at 时回退缓存静态文本。
+    /// </summary>
+    public static string FormatResetCountdown(DateTimeOffset? resetAt, DateTimeOffset now, string fallback)
+    {
+        if (resetAt is null)
+            return fallback;
+
+        var diff = resetAt.Value - now;
+        if (diff.TotalSeconds <= 0)
+            return "即将重置";
+
+        var totalMinutes = (long)Math.Floor(diff.TotalMinutes);
+        if (totalMinutes < 60)
+            return $"{totalMinutes}分钟后";
+
+        var hours = totalMinutes / 60;
+        var mins = totalMinutes % 60;
+        if (hours < 24)
+            return mins == 0 ? $"{hours}小时后" : $"{hours}小时{mins}分后";
+
+        var days = hours / 24;
+        var remHours = hours % 24;
+        return remHours == 0 ? $"{days}天后" : $"{days}天{remHours}小时后";
     }
 
     public async Task RefreshAsync()

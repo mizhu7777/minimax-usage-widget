@@ -48,7 +48,7 @@ It 'selects general model values regardless of API order' {
     }
 }
 
-It 'heartbeats every 15 minutes, throttles changes to 10 minutes, ignores reset_at jitter' {
+It 'heartbeats every 15 minutes, throttles changes to 2 minutes, ignores reset_at jitter' {
     $now = [DateTimeOffset]::Parse('2026-07-22T12:00:00+08:00').ToUniversalTime()
     $base = $now.ToString('o')
     # S1 修复回归:生产环境 reset_at 每次由本地时钟+remains_time 现算、带亚秒抖动,
@@ -64,19 +64,21 @@ It 'heartbeats every 15 minutes, throttles changes to 10 minutes, ignores reset_
     $current = [pscustomobject]@{ recorded_at = $base; windows = $winCurrent }
     $sameRecent = [pscustomobject]@{ recorded_at = $now.AddMinutes(-10).ToString('o'); windows = $winLast }
     $sameOld    = [pscustomobject]@{ recorded_at = $now.AddMinutes(-16).ToString('o'); windows = $winLast }
-    $changedFar = [pscustomobject]@{ recorded_at = $now.AddMinutes(-12).ToString('o'); windows = @(
+    # P1-4 修复(agy §7.2 仲裁):变化节流阈值 10→2 分钟 —— 10 分钟窗口内"跌下去又重置回原值"
+    # 的波动因键相同会被整体抹掉;2 分钟保证短时消耗与重置跳变都能落盘
+    $changedNear    = [pscustomobject]@{ recorded_at = $now.AddMinutes(-3).ToString('o'); windows = @(
         [pscustomobject]@{ model_id='general'; window_id='5h'; remaining_pct=53; reset_at='2026-07-22T16:00:00.9999999Z' },
         [pscustomobject]@{ model_id='general'; window_id='weekly'; remaining_pct=87; reset_at='2026-07-26T16:00:00.8888888Z' }
     )}
-    $changedRecent = [pscustomobject]@{ recorded_at = $now.AddMinutes(-3).ToString('o'); windows = @(
+    $changedInstant = [pscustomobject]@{ recorded_at = $now.AddMinutes(-1).ToString('o'); windows = @(
         [pscustomobject]@{ model_id='general'; window_id='5h'; remaining_pct=53; reset_at='2026-07-22T16:00:00.9999999Z' },
         [pscustomobject]@{ model_id='general'; window_id='weekly'; remaining_pct=87; reset_at='2026-07-26T16:00:00.8888888Z' }
     )}
 
     Assert-True (-not (Test-ShouldAppendHistory -Last $sameRecent -Current $current -Now $now)) 'unchanged values with reset_at jitter must be skipped within 15 minutes'
     Assert-True (Test-ShouldAppendHistory -Last $sameOld -Current $current -Now $now) '15-minute heartbeat must append'
-    Assert-True (Test-ShouldAppendHistory -Last $changedFar -Current $current -Now $now) 'changed value after 10 minutes must append'
-    Assert-True (-not (Test-ShouldAppendHistory -Last $changedRecent -Current $current -Now $now)) 'changed value within 10 minutes must be throttled'
+    Assert-True (Test-ShouldAppendHistory -Last $changedNear -Current $current -Now $now) 'changed value after 2 minutes must append'
+    Assert-True (-not (Test-ShouldAppendHistory -Last $changedInstant -Current $current -Now $now)) 'changed value within 2 minutes must be throttled'
 }
 
 It 'prunes snapshots older than 90 days and skips malformed lines' {

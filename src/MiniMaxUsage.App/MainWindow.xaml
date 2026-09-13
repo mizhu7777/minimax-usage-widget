@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:po="http://schemas.microsoft.com/winfx/2006/xaml/presentation/options"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:controls="clr-namespace:MiniMaxUsage.App.Controls"
         xmlns:conv="clr-namespace:MiniMaxUsage.App.Converters"
         Title="MiniMax Usage"
@@ -11,6 +12,11 @@
         AllowsTransparency="True"
         Background="Transparent"
         ResizeMode="CanResize">
+    <!-- P2-16 修复:无边框窗口补 WindowChrome —— 恢复边缘缩放抓手,
+         并让最大化约束到工作区(不再遮挡任务栏);CaptionHeight=0 保留自绘标题栏拖拽 -->
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
     <Window.Resources>
         <LinearGradientBrush x:Key="WindowBg" StartPoint="0,0" EndPoint="1,1">
             <GradientStop Offset="0" Color="#F0F5FC"/>
@@ -23,6 +29,8 @@
 
         <!-- P1-1 + P1-9 修复:严重度→刷色、字符串非空→可见性、bool→取反（用于 IsEnabled） -->
         <conv:SeverityToBrushConverter x:Key="SeverityToBrushConverter"/>
+        <!-- P0-1 修复:圆环强调色按规范 §7.1 独立映射(5h 蓝/周紫,警告橙,危急红) -->
+        <conv:RingAccentConverter x:Key="RingAccentConverter"/>
         <conv:StringNotEmptyToVisibilityConverter x:Key="StringNotEmptyToVisibilityConverter"/>
         <conv:BoolNegationConverter x:Key="BoolNegationConverter"/>
 
@@ -132,17 +140,16 @@
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Grid.Column="0" HorizontalAlignment="Center">
-                                            <!-- P2-1② 修复:AccentBrush 按 FiveHourSeverity 切换,低额度自动变色 -->
+                                            <!-- P0-1 修复:Normal 态 5 小时环为规范蓝(#2583F7),Warning/Critical 才切换橙/红 -->
                                             <controls:CircularGauge Value="{Binding FiveHourPercent}" Width="110" Height="110" Caption=""
-                                                AccentBrush="{Binding FiveHourSeverity, Converter={StaticResource SeverityToBrushConverter}}"/>
-                                            <TextBlock Text="{Binding FiveHourPercent, StringFormat={}{0}%}" FontSize="11" Foreground="#64748B" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-                                            <TextBlock Text="5 小时剩余" FontSize="10" Foreground="#94A3B8" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                                                AccentBrush="{Binding FiveHourSeverity, Converter={StaticResource RingAccentConverter}, ConverterParameter=5h}"/>
+                                            <TextBlock Text="5 小时剩余" FontSize="10" Foreground="#94A3B8" HorizontalAlignment="Center" Margin="0,4,0,0"/>
                                         </StackPanel>
                                         <StackPanel Grid.Column="1" HorizontalAlignment="Center">
+                                            <!-- P0-1 修复:Normal 态周环为规范紫(#8B5CF6) -->
                                             <controls:CircularGauge Value="{Binding WeeklyPercent}" Width="110" Height="110" Caption=""
-                                                AccentBrush="{Binding WeeklySeverity, Converter={StaticResource SeverityToBrushConverter}}"/>
-                                            <TextBlock Text="{Binding WeeklyPercent, StringFormat={}{0}%}" FontSize="11" Foreground="#64748B" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-                                            <TextBlock Text="本周剩余" FontSize="10" Foreground="#94A3B8" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                                                AccentBrush="{Binding WeeklySeverity, Converter={StaticResource RingAccentConverter}, ConverterParameter=weekly}"/>
+                                            <TextBlock Text="本周剩余" FontSize="10" Foreground="#94A3B8" HorizontalAlignment="Center" Margin="0,4,0,0"/>
                                         </StackPanel>
                                     </Grid>
                                 </StackPanel>
@@ -191,7 +198,9 @@
                                 </Grid>
                                 <controls:TrendChart x:Name="ChartControl" Height="200" Margin="0,10,0,0"
                                                      FiveHourSegments="{Binding FiveHourSegments}"
-                                                     WeeklySegments="{Binding WeeklySegments}"/>
+                                                     WeeklySegments="{Binding WeeklySegments}"
+                                                     AxisStart="{Binding AxisStart}"
+                                                     AxisEnd="{Binding AxisEnd}"/>
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
                                     <StackPanel Orientation="Horizontal" Margin="0,0,16,0">
                                         <Rectangle Width="10" Height="3" Fill="#2583F7" VerticalAlignment="Center" RadiusX="2" RadiusY="2"/>

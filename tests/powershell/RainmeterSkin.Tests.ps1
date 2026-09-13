@@ -32,6 +32,8 @@ It 'has a freshness script that reads cache text files' {
     Assert-True ($lua -match 'status\.txt') 'status.txt reference missing'
     # O5 修复后 Lua 只保留 Update() 入口与新鲜度判定,不再携带无调用方的 Get* 辅助函数
     Assert-True ($lua -match 'function Update\(\)') 'Update() entry point missing'
+    # P2-11 修复回归:StaleAfterSec 必须是裸选项(Rainmeter 无 MeasureOption= 关键字)
+    Assert-True ($ini -match '(?m)^StaleAfterSec=\d+') 'StaleAfterSec option missing or invalid'
 }
 
 function Get-IniValue {
