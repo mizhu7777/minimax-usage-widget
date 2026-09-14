@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
@@ -244,6 +244,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return "即将重置";
 
         var totalMinutes = (long)Math.Floor(diff.TotalMinutes);
+        if (totalMinutes <= 0)
+            return "即将重置";
         if (totalMinutes < 60)
             return $"{totalMinutes}分钟后";
 

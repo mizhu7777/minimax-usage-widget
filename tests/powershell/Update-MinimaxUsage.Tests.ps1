@@ -93,6 +93,21 @@ It 'prunes snapshots older than 90 days and skips malformed lines' {
     Assert-True ($kept[0] -like '*2026-07-01*') 'recent line must be retained'
 }
 
+It 'formats reset countdown cleanly avoiding 0分钟后 in final minute' {
+    Assert-Equal 'N/A' (Format-ResetText -resetAt '') 'empty reset_at must return N/A'
+    $past = [DateTimeOffset]::Now.AddSeconds(-10).ToString('o')
+    Assert-Equal '即将重置' (Format-ResetText -resetAt $past) 'expired reset_at must return 即将重置'
+
+    $soon = [DateTimeOffset]::Now.AddSeconds(30).ToString('o')
+    Assert-Equal '即将重置' (Format-ResetText -resetAt $soon) 'under 1 minute must return 即将重置'
+
+    $mins = [DateTimeOffset]::Now.AddMinutes(5).AddSeconds(10).ToString('o')
+    Assert-Equal '5分钟后' (Format-ResetText -resetAt $mins) '5 minutes countdown must match'
+
+    $hours = [DateTimeOffset]::Now.AddHours(2).AddMinutes(15).AddSeconds(20).ToString('o')
+    Assert-Equal '2小时15分后' (Format-ResetText -resetAt $hours) 'hours and minutes countdown must match'
+}
+
 It 'writes Rainmeter variables for paths containing spaces and Chinese characters' {
     . "$PSScriptRoot\..\..\scripts\Install-Task.ps1" -NoRun
     $temp = Join-Path ([IO.Path]::GetTempPath()) ("MiniMax 测试 " + [guid]::NewGuid())

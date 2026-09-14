@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Media;
 using MiniMaxUsage.App.Models;
 
@@ -133,10 +133,7 @@ public sealed class TrendChart : FrameworkElement
             time.ToLocalTime().ToString("MM-dd HH:mm"),
             System.Globalization.CultureInfo.CurrentCulture,
             FlowDirection.LeftToRight,
-            LabelTypeface, 9, GridLabelColor, VisualTreeHelper.GetDpi(this).PixelsPerDip)
-        {
-            TextAlignment = alignment
-        };
+            LabelTypeface, 9, GridLabelColor, VisualTreeHelper.GetDpi(this).PixelsPerDip);
         var drawX = alignment switch
         {
             TextAlignment.Left => x,

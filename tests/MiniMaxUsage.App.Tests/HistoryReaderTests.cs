@@ -1,4 +1,4 @@
-using MiniMaxUsage.App.Models;
+﻿using MiniMaxUsage.App.Models;
 using MiniMaxUsage.App.Services;
 
 namespace MiniMaxUsage.App.Tests;
@@ -19,6 +19,7 @@ public sealed class HistoryReaderTests
         var cutoff = DateTimeOffset.Parse("2026-06-01T00:00:00+08:00");
         var samples = new Services.HistoryReader().Read(path, cutoff);
 
+        Assert.NotNull(samples);
         Assert.Single(samples);
         Assert.Equal(80, samples[0].FiveHourPercent);
         Assert.Equal(95, samples[0].WeeklyPercent);

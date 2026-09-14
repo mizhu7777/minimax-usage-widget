@@ -1,4 +1,4 @@
-using MiniMaxUsage.App.Models;
+﻿using MiniMaxUsage.App.Models;
 using MiniMaxUsage.App.Services;
 using MiniMaxUsage.App.ViewModels;
 
@@ -182,6 +182,35 @@ public sealed class MainViewModelTests
 
         Assert.Equal("1小时30分后", vm.FiveHourResetText);
         Assert.Equal("4天后", vm.WeeklyResetText);
+    }
+
+    [Fact]
+    public void FormatResetCountdownEdgeCases()
+    {
+        var now = DateTimeOffset.Parse("2026-07-22T12:00:00+08:00");
+
+        // Null -> fallback
+        Assert.Equal("回退文本", MainViewModel.FormatResetCountdown(null, now, "回退文本"));
+
+        // 过期 / 0 秒 -> 即将重置
+        Assert.Equal("即将重置", MainViewModel.FormatResetCountdown(now.AddSeconds(-5), now, "回退"));
+        Assert.Equal("即将重置", MainViewModel.FormatResetCountdown(now, now, "回退"));
+
+        // 细节 3 修复回归: 剩余不足 60 秒时显示"即将重置",避免显示"0分钟后"
+        Assert.Equal("即将重置", MainViewModel.FormatResetCountdown(now.AddSeconds(30), now, "回退"));
+        Assert.Equal("即将重置", MainViewModel.FormatResetCountdown(now.AddSeconds(59), now, "回退"));
+
+        // 分钟级
+        Assert.Equal("1分钟后", MainViewModel.FormatResetCountdown(now.AddMinutes(1).AddSeconds(20), now, "回退"));
+        Assert.Equal("45分钟后", MainViewModel.FormatResetCountdown(now.AddMinutes(45), now, "回退"));
+
+        // 小时级 (整点与带分)
+        Assert.Equal("2小时后", MainViewModel.FormatResetCountdown(now.AddHours(2), now, "回退"));
+        Assert.Equal("2小时15分后", MainViewModel.FormatResetCountdown(now.AddHours(2).AddMinutes(15), now, "回退"));
+
+        // 天级 (整天与带小时)
+        Assert.Equal("3天后", MainViewModel.FormatResetCountdown(now.AddDays(3), now, "回退"));
+        Assert.Equal("3天5小时后", MainViewModel.FormatResetCountdown(now.AddDays(3).AddHours(5), now, "回退"));
     }
 
     // P1-5 修复回归:趋势轴锚定为 [Now-区间, Now];切换区间后窗口随之更新

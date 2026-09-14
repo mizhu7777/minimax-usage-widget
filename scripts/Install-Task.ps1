@@ -244,6 +244,28 @@ foreach ($skinsRoot in ($rainmeterRoots | Select-Object -Unique)) {
     }
 }
 
+# 细节 5 优化:若 Rainmeter 正在运行,向其发送刷新命令以实现热重载(无需用户手动右键刷新)
+try {
+    $rainmeterProc = Get-Process -Name Rainmeter -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($rainmeterProc) {
+        $rmPath = $rainmeterProc.Path
+        if (-not $rmPath) {
+            $regInstall = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Rainmeter' -Name InstallPath -ErrorAction SilentlyContinue).InstallPath
+            if ($regInstall) { $rmPath = Join-Path $regInstall 'Rainmeter.exe' }
+        }
+        if (-not $rmPath -or -not (Test-Path $rmPath)) {
+            $userReg = (Get-ItemProperty -Path 'HKCU:\Software\Rainmeter' -Name InstallPath -ErrorAction SilentlyContinue).InstallPath
+            if ($userReg) { $rmPath = Join-Path $userReg 'Rainmeter.exe' }
+        }
+        if ($rmPath -and (Test-Path $rmPath)) {
+            Start-Process -FilePath $rmPath -ArgumentList '!Refresh MiniMaxUsage' -WindowStyle Hidden
+            Write-Host "[OK]  已向 Rainmeter 发送刷新命令 (!Refresh MiniMaxUsage)" -ForegroundColor Green
+        }
+    }
+} catch {
+    Write-Host "[WARN] 尝试刷新 Rainmeter 皮肤失败: $_" -ForegroundColor Yellow
+}
+
 Write-Host ''
 Write-Host '=== 安装成功 ===' -ForegroundColor Green
 Write-Host "任务名称: $taskName"

@@ -106,6 +106,7 @@ function Format-ResetText {
         if ($diff.TotalSeconds -le 0) { return '即将重置' }
         # 先取整（向下取整）再除，避免 [int] cast 的四舍五入问题
         $totalMinutes = [int][math]::Floor($diff.TotalMinutes)
+        if ($totalMinutes -le 0) { return '即将重置' }
         if ($totalMinutes -lt 60) { return "${totalMinutes}分钟后" }
         $hours = [math]::Floor($totalMinutes / 60)
         $mins = $totalMinutes % 60
