@@ -41,6 +41,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     // P1-5 修复:趋势轴锚定 [Now-区间, Now],由 RebuildTrends 随每次重建刷新
     private DateTimeOffset _axisStart;
     private DateTimeOffset _axisEnd;
+    // C6 修复:最近一次手动刷新失败的原因;null = 无。
+    // 必须由 LoadCache 在计算状态后消费 —— 否则"刷新失败"会被 Load() 的无条件覆写吞掉
+    // (刷新超时/启动失败等场景下缓存本身健康,失败被完全吞掉,用户以为刷新成功了)
+    private string? _lastRefreshError;
 
     public MainViewModel(
         string projectRoot,
@@ -118,31 +122,57 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         var now = _clock();
         LoadCache(now);
-        // P1-7 修复:Load() 内部统一读一次 history,然后传给 RebuildTrends,
-        // 避免之前 LoadHistory 读完丢弃 + RebuildTrends 再读一次的双重 IO
         var historyPath = Path.Combine(_projectRoot, ".cache", "history.jsonl");
         var fileInfo = new FileInfo(historyPath);
-        var unchanged = fileInfo.Exists
-            && fileInfo.Length == _historyFileLength
-            && fileInfo.LastWriteTimeUtc == _historyFileWriteUtc;
-        if (!unchanged)
+        if (!IsHistoryUnchanged(fileInfo))
         {
             // P1-8 修复:Read 与采集器竞争时返回 null(而非抛异常),保留上次数据待下个周期重试
             var read = _historyReader.Read(historyPath, now.AddDays(-90));
-            if (read is not null)
-            {
-                _allSamples = read;
-                _historyFileLength = fileInfo.Exists ? fileInfo.Length : -1;
-                _historyFileWriteUtc = fileInfo.Exists ? fileInfo.LastWriteTimeUtc : DateTime.MinValue;
-                _trendsDirty = true;
-            }
+            AdoptHistory(read, fileInfo);
         }
+        MarkTrendsDirtyForClock(now);
+        RebuildTrends();
+    }
 
+    // C4/M-6 修复:history.jsonl 的全量读取与逐行 JSON 解析移出 UI 线程 ——
+    // 90 天保留上限约 65k 行/15MB,变化期每 2 分钟一次的全量解析在 UI 线程上
+    // 会造成可感知卡顿(实测 23k 行仅 ReadLine 就 113ms)。结果回到调用方
+    // 同步上下文(WPF 为 UI 线程)后才触碰绑定属性
+    public async Task LoadAsync()
+    {
+        var now = _clock();
+        LoadCache(now);
+        var historyPath = Path.Combine(_projectRoot, ".cache", "history.jsonl");
+        var fileInfo = new FileInfo(historyPath);
+        if (!IsHistoryUnchanged(fileInfo))
+        {
+            var read = await Task.Run(() => _historyReader.Read(historyPath, now.AddDays(-90)));
+            AdoptHistory(read, fileInfo);
+        }
+        MarkTrendsDirtyForClock(now);
+        RebuildTrends();
+    }
+
+    private bool IsHistoryUnchanged(FileInfo fileInfo)
+        => fileInfo.Exists
+            && fileInfo.Length == _historyFileLength
+            && fileInfo.LastWriteTimeUtc == _historyFileWriteUtc;
+
+    private void AdoptHistory(IReadOnlyList<HistorySample>? read, FileInfo fileInfo)
+    {
+        if (read is null)
+            return;
+        _allSamples = read;
+        _historyFileLength = fileInfo.Exists ? fileInfo.Length : -1;
+        _historyFileWriteUtc = fileInfo.Exists ? fileInfo.LastWriteTimeUtc : DateTime.MinValue;
+        _trendsDirty = true;
+    }
+
+    private void MarkTrendsDirtyForClock(DateTimeOffset now)
+    {
         // P1-7 修复:即使历史静止,每 5 分钟也强制重建一次,滑动窗口与轴终点才会前移
         if (now - _lastTrendsRebuild >= TimeSpan.FromMinutes(5))
             _trendsDirty = true;
-
-        RebuildTrends();
     }
 
     private void LoadCache(DateTimeOffset now)
@@ -201,6 +231,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             StatusText = "数据正常";
             StatusSeverity = QuotaSeverity.Normal;
+        }
+
+        // C6 修复:缓存本身健康(无 error 字段)时,"刷新失败"必须保持可见 ——
+        // 它是比"数据正常"更新的信息;缓存自带 error 时以其为准(信息更具体)。
+        // 失败标记保留到下一次 RefreshAsync(成功则清除)
+        if (_lastRefreshError is not null && usage.Error is null)
+        {
+            StatusText = "刷新失败";
+            StatusSeverity = QuotaSeverity.Warning;
+            ErrorMessage = _lastRefreshError;
         }
     }
 
@@ -267,18 +307,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         try
         {
             var result = await PowerShellRefreshService.RunAsync(_projectRoot);
-            if (!result.Success)
-            {
-                // 刷新失败先记录具体原因,Load() 后如果缓存本身有 error 字段,
-                // 会被 LoadCache 覆盖;否则保留这里写的"刷新失败"消息
-                ErrorMessage = result.Error ?? "刷新失败";
-                StatusText = "刷新失败";
-                StatusSeverity = QuotaSeverity.Warning;
-            }
-            Load();
+            // C6 修复:成功清除失败标记;失败记录原因,由 LoadAsync→LoadCache 在
+            // 状态计算后显示,不再被无条件覆写吞掉
+            _lastRefreshError = result.Success ? null : (result.Error ?? "刷新失败");
+            await LoadAsync();
         }
         catch
         {
+            _lastRefreshError = "刷新时发生异常";
             ErrorMessage = "刷新时发生异常";
             StatusText = "刷新异常";
             StatusSeverity = QuotaSeverity.Critical;
@@ -288,6 +324,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
             IsRefreshing = false;
         }
     }
+
+    // 测试钩子:RefreshAsync 依赖外部 powershell 进程,单测用它注入刷新结果,
+    // 验证 C6 的"失败态经 Load() 仍可见 / 成功后清除"
+    internal void SetRefreshOutcomeForTests(bool success, string? error)
+        => _lastRefreshError = success ? null : error;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 

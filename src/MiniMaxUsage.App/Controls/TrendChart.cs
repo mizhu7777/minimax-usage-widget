@@ -49,11 +49,19 @@ public sealed class TrendChart : FrameworkElement
         set => SetValue(AxisEndProperty, value);
     }
 
-    private static readonly Brush FiveHourColor = new SolidColorBrush(Color.FromRgb(37, 131, 247));
-    private static readonly Brush WeeklyColor = new SolidColorBrush(Color.FromRgb(139, 92, 246));
-    private static readonly Brush GridColor = new SolidColorBrush(Color.FromArgb(40, 100, 116, 139));
-    private static readonly Brush GridLabelColor = new SolidColorBrush(Color.FromArgb(80, 100, 116, 139));
+    // S2 修复:静态画刷统一 Freeze,与 CircularGauge(P2-14)/XAML 资源(po:Freeze)标准一致
+    private static readonly Brush FiveHourColor = CreateFrozenBrush(Color.FromRgb(37, 131, 247));
+    private static readonly Brush WeeklyColor = CreateFrozenBrush(Color.FromRgb(139, 92, 246));
+    private static readonly Brush GridColor = CreateFrozenBrush(Color.FromArgb(40, 100, 116, 139));
+    private static readonly Brush GridLabelColor = CreateFrozenBrush(Color.FromArgb(80, 100, 116, 139));
     private static readonly Typeface LabelTypeface = new("Segoe UI");
+
+    private static Brush CreateFrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
 
     protected override void OnRender(DrawingContext dc)
     {

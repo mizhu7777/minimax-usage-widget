@@ -122,4 +122,58 @@ public sealed class UsageCacheReaderTests
         Assert.False(result.IsSuccess);
         Assert.Equal("API Key 无效（status_code=2049）", result.FatalError);
     }
+
+    // C7 修复回归:"items": null → Items 反序列化为 null,FirstOrDefault 对 null 源抛
+    // ArgumentNullException(逃出原 catch 过滤器直冲全局弹窗);修复后应返回 Failure 而非抛
+    [Fact]
+    public void ItemsNullReturnsFatalErrorInsteadOfThrowing()
+    {
+        var json = """
+        {"schema_version":2,"provider_id":"minimax","status":"error","plan":"P",
+         "last_update":null,"error":"e","items":null}
+        """;
+        using var temp = new TempDirectory();
+        var path = temp.WriteFile("cache.json", json);
+
+        var result = new Services.UsageCacheReader().Read(path, DateTimeOffset.Now);
+
+        Assert.False(result.IsSuccess);
+    }
+
+    // C7 修复回归:"items":[null] → lambda 内 NullReferenceException(同样逃出原过滤器);
+    // 修复后应归一化为空集合并返回 Failure 而非抛
+    [Fact]
+    public void ItemsContainingNullElementReturnsFatalErrorInsteadOfThrowing()
+    {
+        var json = """
+        {"schema_version":2,"provider_id":"minimax","status":"ok","plan":"P",
+         "last_update":"2026-07-22T12:00:00+08:00","error":null,"items":[null]}
+        """;
+        using var temp = new TempDirectory();
+        var path = temp.WriteFile("cache.json", json);
+
+        var result = new Services.UsageCacheReader().Read(path, DateTimeOffset.Now);
+
+        Assert.False(result.IsSuccess);
+    }
+
+    // G13 修复回归:文件被独占锁定(FileShare.None)时返回 Failure 而非抛异常,
+    // 与 HistoryReader 的竞争策略一致;同时证明读端使用显式共享模式打开
+    [Fact]
+    public void ReturnsFailureWhenFileIsExclusivelyLocked()
+    {
+        var json = """
+        {"schema_version":2,"provider_id":"minimax","status":"ok","plan":"P",
+         "last_update":"2026-07-22T12:00:00+08:00","error":null,"items":[]}
+        """;
+        using var temp = new TempDirectory();
+        var path = temp.WriteFile("cache.json", json);
+
+        using var exclusive = new System.IO.FileStream(
+            path, System.IO.FileMode.Open, System.IO.FileAccess.ReadWrite, System.IO.FileShare.None);
+
+        var result = new Services.UsageCacheReader().Read(path, DateTimeOffset.Now);
+
+        Assert.False(result.IsSuccess);
+    }
 }

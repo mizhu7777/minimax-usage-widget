@@ -237,4 +237,59 @@ public sealed class MainViewModelTests
         Assert.Equal(now.AddHours(-24), vm.AxisStart);
         Assert.Equal(now, vm.AxisEnd);
     }
+
+    // C6 修复回归:手动刷新失败后,"刷新失败"必须经 Load() 仍可见
+    // (此前失败分支设置的状态被 LoadCache 无条件覆写吞掉,超时等场景用户完全无感知)
+    [Fact]
+    public void RefreshFailureRemainsVisibleAfterLoad()
+    {
+        using var temp = new TempDirectory();
+        temp.WriteFile(".cache/cache.json", """
+            {"schema_version":2,"provider_id":"minimax","status":"ok","plan":"P",
+             "last_update":"2026-07-22T12:00:00+08:00","error":null,"items":[
+               {"model_id":"general","window_id":"5h","name":"5h","remaining_pct":50,"reset_at":null,"reset_text":""},
+               {"model_id":"general","window_id":"weekly","name":"weekly","remaining_pct":80,"reset_at":null,"reset_text":""}]}
+            """);
+        temp.WriteFile(".cache/history.jsonl", "");
+
+        var now = DateTimeOffset.Parse("2026-07-22T12:00:00+08:00");
+        var vm = new MainViewModel(temp.Path, new UsageCacheReader(), new HistoryReader(), () => now);
+        vm.Load();
+        Assert.Equal("数据正常", vm.StatusText);
+
+        vm.SetRefreshOutcomeForTests(false, "刷新脚本超时(>90s)。");
+        vm.Load();
+        Assert.Equal("刷新失败", vm.StatusText);
+        Assert.Equal(QuotaSeverity.Warning, vm.StatusSeverity);
+        Assert.Contains("超时", vm.ErrorMessage);
+
+        // 下一次刷新成功后,失败标记清除,状态恢复正常
+        vm.SetRefreshOutcomeForTests(true, null);
+        vm.Load();
+        Assert.Equal("数据正常", vm.StatusText);
+        Assert.Equal("", vm.ErrorMessage);
+    }
+
+    // C4/M-6 修复回归:LoadAsync 与同步 Load 等价(历史全量读取在后台线程执行,结果一致)
+    [Fact]
+    public async Task LoadAsyncPopulatesSameAsLoad()
+    {
+        using var temp = new TempDirectory();
+        temp.WriteFile(".cache/cache.json", """
+            {"schema_version":2,"provider_id":"minimax","status":"ok","plan":"P",
+             "last_update":"2026-07-22T12:00:00+08:00","error":null,"items":[
+               {"model_id":"general","window_id":"5h","name":"5h","remaining_pct":54,"reset_at":null,"reset_text":""},
+               {"model_id":"general","window_id":"weekly","name":"weekly","remaining_pct":87,"reset_at":null,"reset_text":""}]}
+            """);
+        temp.WriteFile(".cache/history.jsonl", "");
+
+        var now = DateTimeOffset.Parse("2026-07-22T12:00:00+08:00");
+        var vm = new MainViewModel(temp.Path, new UsageCacheReader(), new HistoryReader(), () => now);
+
+        await vm.LoadAsync();
+
+        Assert.Equal(54, vm.FiveHourPercent);
+        Assert.Equal(87, vm.WeeklyPercent);
+        Assert.Equal("数据正常", vm.StatusText);
+    }
 }

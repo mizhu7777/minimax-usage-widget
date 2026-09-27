@@ -19,17 +19,30 @@ public partial class MainWindow : Window
         DataContext = viewModel;
         InitializeComponent();
 
-        // N2 修复:首次 Load() 必须在构造期同步触发,否则窗口打开后 15s 内只显示「正在加载…」
-        // DispatcherTimer 15s 才会首跳,体感太慢
-        _viewModel.Load();
+        // N2 修复:首次加载必须在构造期触发,否则窗口打开后 15s 内只显示「正在加载…」
+        // C4/M-6 修复:历史全量读取已在 LoadAsync 内移出 UI 线程,首屏改为异步加载,
+        // 期间短暂显示"正在加载…";失败静默留给 15s 周期重试(常驻监控不弹窗)
+        _ = LoadInitialAsync();
 
         _refreshTimer = new System.Windows.Threading.DispatcherTimer
         {
             Interval = TimeSpan.FromSeconds(15)
         };
-        _refreshTimer.Tick += (_, _) => _viewModel.Load();
+        _refreshTimer.Tick += async (_, _) => await _viewModel.LoadAsync();
         _refreshTimer.Start();
         Closed += (_, _) => _refreshTimer.Stop();
+    }
+
+    private async Task LoadInitialAsync()
+    {
+        try
+        {
+            await _viewModel.LoadAsync();
+        }
+        catch
+        {
+            // 首屏失败不打断启动,留待定时器下一轮重试
+        }
     }
 
     private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e)
