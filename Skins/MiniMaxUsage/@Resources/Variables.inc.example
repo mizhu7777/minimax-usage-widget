@@ -1,0 +1,13 @@
+[Variables]
+; S4 修复:Variables.inc 由 Install-Task.ps1 按本机路径生成(gitignore 不入库),
+; 本文件是模板 —— 未运行安装器、手动复制皮肤部署时,可复制本文件为同目录 Variables.inc
+; 并把路径替换为实际项目目录(Rainmeter 读取的是反斜杠路径,ProjectDirUri 用正斜杠)。
+; 注意:不生成此文件时皮肤会因 @Include 失败而整张加载不出来,而不是"显示默认值"。
+ProjectDir=D:/path/to/minimax
+ProjectDirUri=D:/path/to/minimax
+DetailExe=D:/path/to/minimax/dist/win-x64/MiniMaxUsage.exe
+NormalColor=37,131,247,255
+WeeklyColor=139,92,246,255
+WarningColor=245,158,11,255
+CriticalColor=239,68,68,255
+TrackColor=90,113,136,36

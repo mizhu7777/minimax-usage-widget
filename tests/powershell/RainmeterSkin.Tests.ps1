@@ -94,4 +94,22 @@ It 'centers percentages and places reset text below the rings' {
     }
 }
 
+It 'skin only reads cache files the collector actually writes (writer/reader contract)' {
+    # S6 修复:此前 8 条全是对 ini 的文本 grep,不校验"脚本写的文件名 == 皮肤读的文件名"。
+    # C5 那类契约漂移(脚本改名/停写某文件而皮肤仍在读)正好落在测试盲区
+    $scriptPath = Join-Path $root 'scripts\Update-MinimaxUsage.ps1'
+    $scriptText = Get-Content $scriptPath -Raw -Encoding UTF8
+    # 采集器写 .cache 下文件的两条路径:Join-Path $cacheDir 'x' / Join-Path $script:cacheDir 'x'
+    # (单引号字符串保证正则里的 \$ 原样到达 regex 引擎,不被 PS 插值吃掉)
+    $written = @([regex]::Matches($scriptText, 'Join-Path\s+(?:\$script:)?\$cacheDir\s+''([^'']+)''') |
+        ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    Assert-True ($written.Count -gt 0) 'collector write-path extraction must find files'
+    $read = @([regex]::Matches($ini, '\.cache/([A-Za-z0-9_.\-]+\.txt)') |
+        ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    Assert-True ($read.Count -ge 8) 'skin must read at least the 8 data txt files'
+    foreach ($f in $read) {
+        Assert-True ($written -contains $f) "skin reads .cache/$f but collector never writes it"
+    }
+}
+
 Complete-Tests

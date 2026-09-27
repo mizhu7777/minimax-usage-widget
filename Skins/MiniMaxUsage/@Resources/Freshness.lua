@@ -7,9 +7,11 @@
 
 function Initialize()
   project = SKIN:GetVariable('ProjectDir')
-  -- StaleAfterSec 在 ini 中用 MeasureOption=StaleAfterSec=180 传入
+  -- S13 修复:StaleAfterSec 在 ini 中以裸选项行传入(见 [MeasureStatusText] 的 StaleAfterSec=180)。
+  -- 旧注释声称用 "MeasureOption=StaleAfterSec=180" 传入 —— Rainmeter 没有这个关键字,系误导
   local opt = SELF:GetOption('StaleAfterSec', '180')
   STALE_AFTER = tonumber(opt) or 180
+  lastStatus = nil
 end
 
 local function read_first_line(path)
@@ -65,8 +67,14 @@ local STATUS_COLORS = {
 
 function Update()
   local status = computeStatus()
-  SKIN:Bang('!SetOption', 'MeterStatusBadge', 'FontColor', STATUS_COLORS[status] or '79,195,247,255')
-  SKIN:Bang('!UpdateMeter', 'MeterStatusBadge')
-  SKIN:Bang('!Redraw')
+  -- S10 修复:仅在状态变化时才 Bang —— Update 每 10 秒(Update=2000 × UpdateDivider=5)
+  -- 触发一次,旧实现无条件 !Redraw 会让整张皮肤静止时也全量重绘。
+  -- 皮肤重载(Rainmeter Refresh)会重新走 Initialize,lastStatus 复位,首帧必然生效
+  if status ~= lastStatus then
+    SKIN:Bang('!SetOption', 'MeterStatusBadge', 'FontColor', STATUS_COLORS[status] or '79,195,247,255')
+    SKIN:Bang('!UpdateMeter', 'MeterStatusBadge')
+    SKIN:Bang('!Redraw')
+    lastStatus = status
+  end
   return status
 end
