@@ -1,6 +1,15 @@
 ﻿# Update-MinimaxUsage.ps1
 # 后台查询脚本：每 1 分钟调用 MiniMax API，解密凭据，写 JSON 缓存
 # 由 Windows 任务计划程序定时触发（每 1 分钟执行一次，脚本单次运行即退出）
+#
+# 2026-09-27 修复记录(对抗式审查两轮交叉结论):
+#   C8   路径统一由 Initialize-Paths 单点计算 + Assert-CacheDirIsolated 兜底(防测试直写生产 .cache)
+#   S11  Write-Log 改用 FileShare.ReadWrite 追加,互斥体外并发写不再丢行
+#   C7   Write-Cache 过滤 items 中的 null 元素(含整体 null),不让降级路径制造 C# 读端崩溃输入
+#   S-1  Get-DecryptedKey 对 CryptographicException 给出可操作提示
+#   C5   Write-SimpleCache 窗口缺失时显式写 N/A/0(不再残留旧值;冷启动文件齐全)
+#   G17  Write-Status 失败路径写"HH:mm 失败"而非"HH:mm 更新"
+#   G14  Invoke-HistoryPruneIfDue 移出成功路径,90 天保留策略不随 API 故障停摆
 
 [CmdletBinding()]
 param(
@@ -21,23 +30,40 @@ $mutexName = 'Global\MiniMaxUsage.Refresh'  # 防止 WPF 手动刷新与任务�
 # 注:"已过期"状态由皮肤侧 Freshness.lua 基于 last-success-epoch.txt 心跳独立判定,
 # 脚本侧不再重复计算(O2 修复:原 Write-Status 的过期分支不可达)
 
-# === 路径解析（全部留在项目目录下） ===
-$scriptDir  = $PSScriptRoot
-$projectDir = Split-Path -Parent $scriptDir
-$configDir  = Join-Path $projectDir '.config'
-$cacheDir   = Join-Path $projectDir '.cache'
-$apiKeyEnc  = Join-Path $configDir 'apikey.enc'
-$cacheFile  = Join-Path $cacheDir 'cache.json'
-$logFile    = Join-Path $cacheDir 'widget.log'
-$historyFile = Join-Path $cacheDir 'history.jsonl'
-$historyPrunedDateFile = Join-Path $cacheDir 'history-pruned-date.txt'
-$lastSuccessEpochFile = Join-Path $cacheDir 'last-success-epoch.txt'
-$updatedTxt = Join-Path $cacheDir 'updated.txt'
-
-# 确保缓存目录存在
-if (-not (Test-Path $cacheDir)) {
-    New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+# === 路径解析(C8 修复:路径统一由 Initialize-Paths 单点计算) ===
+# 旧实现把 $cacheFile/$historyFile/$logFile 等在 dot-source 时预绑定,测试里改写 $cacheDir
+# 对它们永远无效(事故 #2 根因);而动态求值的函数又依赖 dot-source 所处作用域
+# ($script: 覆盖在函数/块内 dot-source 时落不到实际变量上,事故 #1 根因)。
+# 现在所有路径变量只由 Initialize-Paths 计算,测试/验证脚本:
+#   1. 调用 Initialize-Paths -ProjectDir <dir> 单点注入
+#   2. 调用 Assert-CacheDirIsolated 断言生效 —— 未生效立即失败,绝不静默写生产 .cache(S15)
+function Initialize-Paths {
+    param([Parameter(Mandatory)][string]$ProjectDir)
+    $script:projectDir = $ProjectDir
+    $script:configDir  = Join-Path $ProjectDir '.config'
+    $script:cacheDir   = Join-Path $ProjectDir '.cache'
+    $script:apiKeyEnc  = Join-Path $script:configDir 'apikey.enc'
+    $script:cacheFile  = Join-Path $script:cacheDir 'cache.json'
+    $script:logFile    = Join-Path $script:cacheDir 'widget.log'
+    $script:historyFile = Join-Path $script:cacheDir 'history.jsonl'
+    $script:historyPrunedDateFile = Join-Path $script:cacheDir 'history-pruned-date.txt'
+    $script:lastSuccessEpochFile = Join-Path $script:cacheDir 'last-success-epoch.txt'
+    if (-not (Test-Path $script:cacheDir)) {
+        New-Item -ItemType Directory -Path $script:cacheDir -Force | Out-Null
+    }
 }
+
+function Assert-CacheDirIsolated {
+    param([Parameter(Mandatory)][string]$ExpectedCacheDir)
+    # S15 兜底:重定向后必须断言;断言不过就抛异常,把"覆盖失效"从静默污染变成显式错误
+    $actual = [System.IO.Path]::GetFullPath($cacheDir)
+    $expected = [System.IO.Path]::GetFullPath($ExpectedCacheDir)
+    if ($actual -ne $expected) {
+        throw "缓存目录隔离断言失败: 当前 '$actual' != 期望 '$expected'。拒绝继续,防止写操作污染生产 .cache。"
+    }
+}
+
+Initialize-Paths -ProjectDir (Split-Path -Parent $PSScriptRoot)
 
 # === 日志函数 ===
 function Write-Log {
@@ -48,7 +74,20 @@ function Write-Log {
     try {
         # M-4 修复:统一 UTF-8 无 BOM —— PS 5.1 的 -Encoding UTF8 在创建文件时会写 BOM,
         # 与 C# 端 File.AppendAllText(无 BOM)混写造成编码不一致
-        [System.IO.File]::AppendAllText($logFile, $line + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+        # S11 修复:显式 FileShare.ReadWrite —— busy/WARN 路径在互斥体外写日志,与正常路径并发;
+        # AppendAllText 的默认共享模式会让并发一方抛 IOException 被空 catch 吞掉而丢行
+        $fs = [System.IO.File]::Open($logFile, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+        try {
+            $writer = [System.IO.StreamWriter]::new($fs, [System.Text.UTF8Encoding]::new($false))
+            try {
+                $writer.WriteLine($line)
+                $writer.Flush()
+            } finally {
+                $writer.Dispose()
+            }
+        } finally {
+            $fs.Dispose()
+        }
 
         # P2-18 修复:日志轮转在文件被外部锁时抛
         # 用 try/catch 吃掉轮转失败,主写入仍保留
@@ -84,8 +123,11 @@ function Get-LastCache {
 function Write-Cache {
     param([hashtable]$Data)
     $tmp = "$cacheFile.tmp"
-    if ($Data.ContainsKey('items') -and $null -eq $Data['items']) {
-        $Data['items'] = @()
+    if ($Data.ContainsKey('items')) {
+        # C7 修复:除了整体 $null,还必须过滤 @($null) 这种"含 null 元素"的数组 ——
+        # 降级路径 @($existing.items) 在 existing.items 为 null 时正是这种形状,
+        # 会序列化为 "items":[null],让 C# 端 UsageCacheReader 抛未捕获异常
+        $Data['items'] = @($Data['items'] | Where-Object { $null -ne $_ })
     }
     # 默认注入 schema_version，便于皮肤/工具检测字段兼容性
     if (-not $Data.ContainsKey('schema_version')) {
@@ -130,10 +172,16 @@ function Get-DecryptedKey {
     }
     Add-Type -AssemblyName System.Security
     $encBytes = [System.IO.File]::ReadAllBytes($apiKeyEnc)
-    $plainBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
-        $encBytes, $null,
-        [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-    )
+    try {
+        $plainBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $encBytes, $null,
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+    } catch [System.Security.Cryptography.CryptographicException] {
+        # S-1 修复:DPAPI 失效(换用户/重装系统/profile 重建)是实际发生过的故障,
+        # 原始 CLR 反射异常("该项不适于在指定状态下使用")不可操作,必须指向唯一修复手段
+        throw "API Key 解密失败: 加密文件与当前 Windows 用户上下文不匹配。请重新运行 scripts\Set-MinimaxApiKey.ps1 重新加密保存。(原始错误: $($_.Exception.Message))"
+    }
     return [System.Text.Encoding]::UTF8.GetString($plainBytes)
 }
 
@@ -165,7 +213,7 @@ function Build-CacheFromResponse {
     }
 
     $models = $Response.model_remains
-    if (-not $models -or $models.Count -eq 0) {
+    if (-not $models -or @($models).Count -eq 0) {
         throw "响应中没有 model_remains 数据"
     }
 
@@ -283,6 +331,9 @@ function Write-SimpleCache {
         $_.model_id -eq 'general' -and $_.window_id -eq 'weekly'
     } | Select-Object -First 1)
 
+    # C5 修复:窗口缺失时显式写 N/A/0 —— 否则旧值永久残留(陈旧值泄漏),
+    # 且冷启动(无历史缓存)时这六个文件根本不创建,皮肤读到全空;
+    # 'N/A' 让皮肤显示占位文本(WebParser 数字解析为 0,圆环空、颜色转红)
     if ($item1.Count -gt 0) {
         $fiveHour = $item1[0]
         # O1 修复:保留 1 位小数,避免 API 返回 66.66666666666667 时皮肤显示超长小数
@@ -290,6 +341,10 @@ function Write-SimpleCache {
         $bar1 = [math]::Round($fiveHour.remaining_pct / 100.0, 4)
         Write-AtomicText -Path $bar1Txt -Value ($bar1.ToString($ci))
         Write-AtomicText -Path $reset1Txt -Value $fiveHour.reset_text
+    } else {
+        Write-AtomicText -Path $pct1Txt -Value 'N/A'
+        Write-AtomicText -Path $bar1Txt -Value '0'
+        Write-AtomicText -Path $reset1Txt -Value 'N/A'
     }
     if ($item2.Count -gt 0) {
         $weekly = $item2[0]
@@ -297,12 +352,16 @@ function Write-SimpleCache {
         $bar2 = [math]::Round($weekly.remaining_pct / 100.0, 4)
         Write-AtomicText -Path $bar2Txt -Value ($bar2.ToString($ci))
         Write-AtomicText -Path $reset2Txt -Value $weekly.reset_text
+    } else {
+        Write-AtomicText -Path $pct2Txt -Value 'N/A'
+        Write-AtomicText -Path $bar2Txt -Value '0'
+        Write-AtomicText -Path $reset2Txt -Value 'N/A'
     }
 }
 
 # === 写 status.txt 供 Rainmeter 状态徽章显示（P2-19 四态语义保留在皮肤侧）===
 # O2 修复:原来基于"刚写入的 epoch"计算 age 恒为 0,过期分支不可达;
-# 新鲜度判定统一由 Freshness.lua 基于 last-success-epoch.txt 心跳完成
+# 新鲜度判定统一由 Freshness.lua 基于心跳 epoch 判定（O2 修复）
 function Write-Status {
     param([string]$Status, [DateTimeOffset]$Now)
     $display = switch ($Status) {
@@ -311,7 +370,9 @@ function Write-Status {
         default { '● 未知' }
     }
     Write-AtomicText -Path (Join-Path $cacheDir 'status.txt') -Value $display
-    Write-AtomicText -Path (Join-Path $cacheDir 'updated.txt') -Value "$($Now.ToString('HH:mm')) 更新"
+    # G17 修复:失败路径的时间不能伪装成"更新",否则用户误以为刚成功刷新过
+    $suffix = if ($Status -eq 'ok') { '更新' } else { '失败' }
+    Write-AtomicText -Path (Join-Path $cacheDir 'updated.txt') -Value "$($Now.ToString('HH:mm')) $suffix"
 }
 
 # === 历史快照函数 ===
@@ -434,6 +495,18 @@ function Invoke-RefreshOnce {
     }
     try {
         try {
+            # G14 修复:修剪与"API 成功"解耦 —— 它只依赖本地文件,放在成功路径里
+            # 意味着 API 长期故障时 90 天保留策略被静默停用(实测 pruned-date 停摆 39 天)。
+            # 失败不应中断刷新,故单独 try/catch。
+            # 注意:-Now 必须用括号表达式 —— PS 参数模式下 [DateTimeOffset]::Now
+            # 会被当作字符串字面量,导致参数绑定失败(冒烟测试实测踩坑)
+            $pruneNow = [DateTimeOffset]::Now
+            try {
+                Invoke-HistoryPruneIfDue -Now $pruneNow
+            } catch {
+                Write-Log 'WARN' "历史修剪失败(不中断刷新): $_"
+            }
+
             $apiKey = Get-DecryptedKey
 
             $response = $null
@@ -460,7 +533,7 @@ function Invoke-RefreshOnce {
             Write-SimpleCache -Cache $cache
             $now = [DateTimeOffset]::Now
             Add-HistorySnapshot -Cache $cache -Now $now
-            Invoke-HistoryPruneIfDue -Now $now
+            # G14:Invoke-HistoryPruneIfDue 已移到刷新开始处,不再依赖本次 API 成功
             Write-AtomicText -Path $lastSuccessEpochFile -Value "$($now.ToUnixTimeSeconds())"
             # status 只表达 ok/error;新鲜度由 Freshness.lua 基于心跳 epoch 判定（O2 修复）
             Write-Status -Status 'ok' -Now $now
@@ -472,7 +545,10 @@ function Invoke-RefreshOnce {
 
         } catch {
             # 失败：写入错误状态（保留上次数据供皮肤降级显示）
-            Write-Log 'ERROR' $_.Exception.Message
+            # G12 修复:异常消息可能含真实换行(如 CryptographicException 以 \r\n 结尾),
+            # 压平后再写缓存/日志,避免 UI 横幅出现断裂空行
+            $failureMessage = ($_.Exception.Message -replace '\s*\r?\n\s*', ' ').Trim()
+            Write-Log 'ERROR' $failureMessage
 
             $existing = Get-LastCache
             $errorCache = [ordered]@{
@@ -481,8 +557,8 @@ function Invoke-RefreshOnce {
                 status         = 'error'
                 plan           = if ($existing) { $existing.plan } else { $planName }
                 last_update    = if ($existing) { $existing.last_update } else { $null }
-                error          = $_.Exception.Message
-                items          = if ($existing) { @($existing.items) } else { @() }
+                error          = $failureMessage
+                items          = if ($existing) { @($existing.items | Where-Object { $null -ne $_ }) } else { @() }
             }
             try {
                 Write-Cache -Data $errorCache

@@ -37,14 +37,67 @@ It 'builds schema v2 with stable provider model and window ids' {
 It 'selects general model values regardless of API order' {
     $temp = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid())
     New-Item -ItemType Directory -Path $temp | Out-Null
+    $originalProjectDir = $projectDir
     try {
-        $script:cacheDir = $temp
+        # C8 修复:路径重定向走 Initialize-Paths 单点注入;S15 兜底:必须断言生效,
+        # 覆盖未送达时立即失败,绝不静默写生产 .cache
+        Initialize-Paths -ProjectDir $temp
+        Assert-CacheDirIsolated -ExpectedCacheDir (Join-Path $temp '.cache')
         $cache = Build-CacheFromResponse -Response (New-TestResponse)
         Write-SimpleCache -Cache $cache
-        Assert-Equal '54' (Get-Content "$temp\pct1.txt" -Raw) '5h value must use general'
-        Assert-Equal '87' (Get-Content "$temp\pct2.txt" -Raw) 'weekly value must use general'
+        Assert-Equal '54' (Get-Content "$temp\.cache\pct1.txt" -Raw) '5h value must use general'
+        Assert-Equal '87' (Get-Content "$temp\.cache\pct2.txt" -Raw) 'weekly value must use general'
     } finally {
         Remove-Item $temp -Recurse -Force
+        # S7 修复:恢复路径变量,消除测试间顺序耦合
+        Initialize-Paths -ProjectDir $originalProjectDir
+    }
+}
+
+It 'writes N/A markers when selected quota windows are missing' {
+    # C5 修复回归:窗口缺失时显式写 N/A/0,不再残留旧值,冷启动文件也齐全
+    $temp = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid())
+    New-Item -ItemType Directory -Path $temp | Out-Null
+    $originalProjectDir = $projectDir
+    try {
+        Initialize-Paths -ProjectDir $temp
+        Assert-CacheDirIsolated -ExpectedCacheDir (Join-Path $temp '.cache')
+        $cache = [ordered]@{
+            schema_version = 2; provider_id = 'minimax'; status = 'ok'
+            plan = 'MiniMax'; last_update = '2026-09-27T00:00:00.0000000+08:00'
+            error = $null; items = @()
+        }
+        Write-SimpleCache -Cache $cache
+        Assert-Equal 'N/A' (Get-Content "$temp\.cache\pct1.txt" -Raw) 'missing 5h must write N/A'
+        Assert-Equal '0' (Get-Content "$temp\.cache\bar1.txt" -Raw) 'missing 5h ring must be empty'
+        Assert-Equal 'N/A' (Get-Content "$temp\.cache\pct2.txt" -Raw) 'missing weekly must write N/A'
+        Assert-Equal 'N/A' (Get-Content "$temp\.cache\reset2.txt" -Raw) 'missing weekly reset must be N/A'
+    } finally {
+        Remove-Item $temp -Recurse -Force
+        Initialize-Paths -ProjectDir $originalProjectDir
+    }
+}
+
+It 'sanitizes null elements out of items before writing cache' {
+    # C7 修复回归:降级路径 @($existing.items) 在 existing.items 为 null 时
+    # 产出含一个 null 元素的数组,Write-Cache 必须过滤,否则序列化为 "items":[null]
+    $temp = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid())
+    New-Item -ItemType Directory -Path $temp | Out-Null
+    $originalProjectDir = $projectDir
+    try {
+        Initialize-Paths -ProjectDir $temp
+        Assert-CacheDirIsolated -ExpectedCacheDir (Join-Path $temp '.cache')
+        $existingItems = $null
+        Write-Cache -Data @{
+            schema_version = 2; provider_id = 'minimax'; status = 'error'
+            plan = 'P'; last_update = $null; error = 'e'
+            items = @($existingItems)
+        }
+        $parsed = Get-Content "$temp\.cache\cache.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-Equal 0 @($parsed.items).Count 'items must serialize as [] not [null]'
+    } finally {
+        Remove-Item $temp -Recurse -Force
+        Initialize-Paths -ProjectDir $originalProjectDir
     }
 }
 
@@ -117,11 +170,22 @@ It 'writes Rainmeter variables for paths containing spaces and Chinese character
         Write-RainmeterVariables -ProjectDir $temp -SkinDir $skin
         $content = Get-Content (Join-Path $skin '@Resources\Variables.inc') -Raw -Encoding UTF8
         Assert-True ($content.Contains("ProjectDir=$temp")) 'Windows project path missing'
-        Assert-True ($content.Contains("ProjectDirUri=$($temp.Replace('\', '/'))")) 'URI path missing'
+        Assert-True ($content.Contains("ProjectDirUri=$($temp.Replace('\', '/').Replace(' ', '%20'))")) 'URI path missing (G16: space must be encoded)'
         Assert-True ($content.Contains("DetailExe=$(Join-Path $temp 'dist\win-x64\MiniMaxUsage.exe')")) 'EXE path missing'
     } finally {
         Remove-Item $temp -Recurse -Force
     }
+}
+
+It 'isolation assertion fails loudly when cache dir points elsewhere' {
+    # S15 兜底回归:断言不过必须抛异常,把"覆盖失效"从静默污染变成显式错误
+    $threw = $false
+    try {
+        Assert-CacheDirIsolated -ExpectedCacheDir (Join-Path ([IO.Path]::GetTempPath()) ('not-isolated-' + [guid]::NewGuid()))
+    } catch {
+        $threw = $true
+    }
+    Assert-True $threw 'Assert-CacheDirIsolated must fail loudly on mismatch'
 }
 
 Complete-Tests
