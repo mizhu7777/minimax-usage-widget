@@ -15,7 +15,11 @@ $ErrorActionPreference = 'Stop'
 $taskName = 'MiniMaxUsageRefresh'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $updateScript = Join-Path $scriptDir 'Update-MinimaxUsage.vbs'
-$xmlFile = Join-Path $scriptDir 'MiniMaxUsageRefresh.xml'
+# G6 修复:临时文件改写 $env:TEMP,不再在被 git 跟踪的 scripts/ 目录里留残骸
+# (安装被 Ctrl+C/UAC 取消/进程被杀时旧路径会留下未跟踪文件)
+$xmlFile = Join-Path ([IO.Path]::GetTempPath()) 'MiniMaxUsageRefresh.xml'
+# 兼容清理:旧版本写在 scripts/ 下的残留
+$legacyXmlFile = Join-Path $scriptDir 'MiniMaxUsageRefresh.xml'
 
 # P6 修复:UAC 提权上下文的用户可能不是桌面登录用户(例如用另一个管理员账户确认 UAC),
 # 而 DPAPI 的 API Key 绑定桌面用户 —— 任务必须注册到交互登录用户名下,
@@ -49,6 +53,9 @@ function Write-RainmeterVariables {
     $resources = Join-Path $SkinDir '@Resources'
     New-Item -ItemType Directory -Path $resources -Force | Out-Null
     $projectUri = $ProjectDir.Replace('\', '/')
+    # G16 修复:file:// URL 中的空格必须编码为 %20,否则皮肤 WebParser 读取可能整体失效
+    # (项目目录含空格时的已知风险;其余字符按需再补)
+    $projectUri = $projectUri.Replace(' ', '%20')
     $detailExe = Join-Path $ProjectDir 'dist\win-x64\MiniMaxUsage.exe'
     $content = @"
 [Variables]
@@ -78,6 +85,7 @@ if ($Uninstall) {
         Write-Host '任务计划不存在，无需卸载' -ForegroundColor Yellow
     }
     if (Test-Path $xmlFile) { Remove-Item $xmlFile -Force }
+    if (Test-Path $legacyXmlFile) { Remove-Item $legacyXmlFile -Force }
     exit 0
 }
 
@@ -174,8 +182,8 @@ $fullBytes.AddRange($contentBytes)
 
 # P2-4 修复:schtasks 重定向文件用 $PSScriptRoot,避免污染 C:\Windows\System32
 # P2-5 修复:Start-Process 包 try/catch,失败给友好提示
-$stderrLog = Join-Path $scriptDir 'schtasks_stderr.txt'
-$stdoutLog = Join-Path $scriptDir 'schtasks_stdout.txt'
+$stderrLog = Join-Path ([IO.Path]::GetTempPath()) 'schtasks_stderr.txt'
+$stdoutLog = Join-Path ([IO.Path]::GetTempPath()) 'schtasks_stdout.txt'
 try {
     $proc = Start-Process -FilePath 'schtasks.exe' `
         -ArgumentList @('/Create', '/TN', "`"$taskName`"", '/XML', "`"$xmlFile`"", '/F') `
@@ -199,6 +207,7 @@ if ($proc.ExitCode -ne 0) {
 
 # 清理临时文件
 if (Test-Path $xmlFile) { Remove-Item $xmlFile -Force }
+if (Test-Path $legacyXmlFile) { Remove-Item $legacyXmlFile -Force }
 if (Test-Path $stderrLog) { Remove-Item $stderrLog }
 if (Test-Path $stdoutLog) { Remove-Item $stdoutLog }
 

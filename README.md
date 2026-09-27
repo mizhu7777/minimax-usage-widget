@@ -17,7 +17,7 @@
 - **每 1 分钟自动刷新**，失败时显示上次缓存 + 错误提示（降级）
 - **5小时窗口 + 周窗口** 双维度展示
 - **DPAPI 加密** API Key（Windows 用户绑定，零外部依赖）
-- **极简体积**：皮肤文件约 5KB，PowerShell 脚本约 15KB
+- **极简体积**：皮肤文件约 6.5KB，PowerShell 脚本约 28KB
 
 ---
 
@@ -76,7 +76,7 @@ Update-MinimaxUsage.ps1
 打开 PowerShell（普通用户即可），运行：
 
 ```powershell
-cd D:\claude_work\2026\07\05\minimax
+cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts\Set-MinimaxApiKey.ps1
 ```
 
@@ -89,7 +89,7 @@ API Key 用 Windows DPAPI 加密后保存到 `.config\apikey.enc`，**只有同�
 **以管理员身份**打开 PowerShell，运行：
 
 ```powershell
-cd D:\claude_work\2026\07\05\minimax
+cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts\Install-Task.ps1
 ```
 
@@ -119,7 +119,7 @@ powershell -ExecutionPolicy Bypass -File scripts\Publish-App.ps1
 ## 📂 项目目录结构
 
 ```
-D:\claude_work\2026\07\05\minimax\
+<项目根目录>\
 ├─ Skins\MiniMaxUsage\               # Rainmeter 皮肤
 │  ├─ MiniMaxUsage.ini               # 双圆环小组件
 │  └─ @Resources\
@@ -132,6 +132,7 @@ D:\claude_work\2026\07\05\minimax\
 │  ├─ Controls\                      # CircularGauge / TrendChart
 │  └─ MainWindow.xaml                # 详情窗口 UI
 ├─ scripts\
+│  ├─ Get-DotnetSdk.ps1              # 新克隆环境引导 pinned .NET SDK 到 .tools
 │  ├─ Set-MinimaxApiKey.ps1          # 加密配置 API Key
 │  ├─ Update-MinimaxUsage.ps1        # 后台查询脚本（含历史快照）
 │  ├─ Install-Task.ps1               # 任务计划管理
@@ -185,7 +186,15 @@ API 调用失败。查看 `.cache\widget.log` 了解原因。
 
 ### 任务计划不执行
 
-没以管理员运行。重新以管理员运行 `Install-Task.ps1`。
+先确认任务是否存在：`schtasks /Query /TN MiniMaxUsageRefresh`。不存在则重新以管理员运行 `Install-Task.ps1`（普通 PowerShell 直接跑会被拒绝）。
+
+### 日志出现 "API Key 解密失败 ... 该项不适于在指定状态下使用"
+
+API Key 加密文件与当前 Windows 用户上下文不匹配（更换用户、重装系统或用户配置文件重建后常见）。重跑 `Set-MinimaxApiKey.ps1` 重新加密保存即可。
+
+### 皮肤整张加载不出来（Rainmeter 日志报 @Include 失败）
+
+`Variables.inc` 由 `Install-Task.ps1` 按本机路径生成（不入库）。**必须先复制皮肤到 Rainmeter 目录、再运行安装器**，或参照 `@Resources\Variables.inc.example` 手工生成；反序操作会让皮肤因缺变量加载失败。
 
 ---
 
